@@ -43,6 +43,10 @@ python ./phase1-codex/train_vae_3d_mask.py \
   --data_dir /home/yinhaojie/GenerativeModels/data/vessel_masks \
   --output_dir ./phase1-codex/outputs_vae_vessel_ft \
   --pretrained_model /home/yinhaojie/GenerativeModels/pretrained_models/autoencoder.pth \
+  --num_channels 64 128 128 128 \
+  --latent_channels 3 \
+  --num_res_blocks 2 \
+  --attention_levels 0 0 0 0 \
   --target_label 1 \
   --spatial_size 64 64 64 \
   --spatial_mode crop \
@@ -51,6 +55,8 @@ python ./phase1-codex/train_vae_3d_mask.py \
   --val_interval 5 \
   --amp
 ```
+
+If pretrained architecture differs from current settings, the script will load only shape-matching parameters by default (`--pretrained_strict` is off).
 
 Resume interrupted training:
 

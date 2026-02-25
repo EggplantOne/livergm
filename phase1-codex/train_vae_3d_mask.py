@@ -83,7 +83,7 @@ def parse_args():
 
     # AutoencoderKL (adapted from brain model config with lighter channels for mask training)
     parser.add_argument("--latent_channels", type=int, default=3)
-    parser.add_argument("--num_channels", type=int, nargs="+", default=[32, 64, 128, 128])
+    parser.add_argument("--num_channels", type=int, nargs="+", default=[64, 128, 128, 128])
     parser.add_argument("--num_res_blocks", type=int, default=2)
     parser.add_argument("--norm_num_groups", type=int, default=32)
     parser.add_argument("--norm_eps", type=float, default=1e-6)
@@ -180,6 +180,23 @@ def _extract_state_dict(loaded_obj):
     return loaded_obj
 
 
+def _load_pretrained_with_shape_filter(model, state_dict):
+    model_sd = model.state_dict()
+    filtered = {}
+    skipped = []
+    for k, v in state_dict.items():
+        if k not in model_sd:
+            skipped.append((k, "missing_in_model"))
+            continue
+        if model_sd[k].shape != v.shape:
+            skipped.append((k, f"shape_mismatch ckpt={tuple(v.shape)} model={tuple(model_sd[k].shape)}"))
+            continue
+        filtered[k] = v
+
+    missing_keys, unexpected_keys = model.load_state_dict(filtered, strict=False)
+    return filtered, skipped, missing_keys, unexpected_keys
+
+
 def main():
     args = parse_args()
     set_determinism(seed=args.seed)
@@ -264,16 +281,30 @@ def main():
     elif args.pretrained_model:
         loaded = torch.load(args.pretrained_model, map_location="cpu")
         state_dict = _extract_state_dict(loaded)
-        load_info = model.load_state_dict(state_dict, strict=args.pretrained_strict)
         if args.pretrained_strict:
+            load_info = model.load_state_dict(state_dict, strict=True)
             print(f"Loaded pretrained model with strict=True from {args.pretrained_model}")
+            print("Fine-tuning starts from epoch 0 with current optimizer settings.")
+            return_missing = getattr(load_info, "missing_keys", [])
+            return_unexpected = getattr(load_info, "unexpected_keys", [])
+            if return_missing:
+                print(f"Missing keys: {len(return_missing)}")
+            if return_unexpected:
+                print(f"Unexpected keys: {len(return_unexpected)}")
         else:
-            print(f"Loaded pretrained model with strict=False from {args.pretrained_model}")
-            if hasattr(load_info, "missing_keys") and load_info.missing_keys:
-                print(f"Missing keys: {len(load_info.missing_keys)}")
-            if hasattr(load_info, "unexpected_keys") and load_info.unexpected_keys:
-                print(f"Unexpected keys: {len(load_info.unexpected_keys)}")
-        print("Fine-tuning starts from epoch 0 with current optimizer settings.")
+            filtered, skipped, missing_keys, unexpected_keys = _load_pretrained_with_shape_filter(model, state_dict)
+            print(f"Loaded pretrained model (shape-filtered) from {args.pretrained_model}")
+            print(f"Loaded keys: {len(filtered)} / {len(state_dict)}")
+            print(f"Skipped keys: {len(skipped)}")
+            if skipped:
+                print("Example skipped keys:")
+                for k, reason in skipped[:10]:
+                    print(f"  - {k}: {reason}")
+            if missing_keys:
+                print(f"Missing keys after load: {len(missing_keys)}")
+            if unexpected_keys:
+                print(f"Unexpected keys after load: {len(unexpected_keys)}")
+            print("Fine-tuning starts from epoch 0 with current optimizer settings.")
 
     for epoch in range(start_epoch, args.num_epochs):
         model.train()
