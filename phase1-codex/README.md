@@ -92,6 +92,7 @@ python .\phase1-codex\train_vae_3d_mask.py `
 
 ```bash
 cd /home/yinhaojie/GenerativeModels
+cd /home/yinhaojie/GenerativeModels
 python ./phase1-codex/eval_vae_3d_mask.py \
   --data_dir /home/yinhaojie/GenerativeModels/data/vessel_masks \
   --model_path /home/yinhaojie/GenerativeModels/phase1-codex/outputs_vae_vessel_ft/checkpoints/autoencoderkl_best_weights.pt \

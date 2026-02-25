@@ -133,26 +133,62 @@ def volume_relative_error(pred_bin, gt_bin, eps=1e-8):
     return (torch.abs(vp - vg) / (vg + eps)).cpu().numpy()
 
 
-def save_orthogonal_comparison(gt, recon, out_path):
+def save_orthogonal_comparison(gt, recon, out_path, threshold=0.5):
     gt_np = gt[0, 0].cpu().numpy()
     rc_np = recon[0, 0].cpu().numpy()
-    z = gt_np.shape[2] // 2
-    y = gt_np.shape[1] // 2
-    x = gt_np.shape[0] // 2
+    rb_np = (rc_np > float(threshold)).astype(np.float32)
 
-    fig, axes = plt.subplots(2, 3, figsize=(12, 8))
+    # Pick slices with most foreground instead of fixed center slices.
+    z = int(np.argmax(np.sum(gt_np, axis=(0, 1))))
+    y = int(np.argmax(np.sum(gt_np, axis=(0, 2))))
+    x = int(np.argmax(np.sum(gt_np, axis=(1, 2))))
+    if np.sum(gt_np) == 0:
+        z = gt_np.shape[2] // 2
+        y = gt_np.shape[1] // 2
+        x = gt_np.shape[0] // 2
+
+    def norm01(a):
+        a = a.astype(np.float32)
+        mn, mx = float(np.min(a)), float(np.max(a))
+        if mx - mn < 1e-8:
+            return np.zeros_like(a, dtype=np.float32)
+        return (a - mn) / (mx - mn)
+
+    rc_vis = norm01(rc_np)
+    fig, axes = plt.subplots(4, 3, figsize=(12, 14))
+
+    # Row 1: GT slices
     axes[0, 0].imshow(gt_np[:, :, z], cmap="gray", vmin=0, vmax=1)
     axes[0, 1].imshow(gt_np[:, y, :], cmap="gray", vmin=0, vmax=1)
     axes[0, 2].imshow(gt_np[x, :, :], cmap="gray", vmin=0, vmax=1)
-    axes[1, 0].imshow(rc_np[:, :, z], cmap="gray", vmin=0, vmax=1)
-    axes[1, 1].imshow(rc_np[:, y, :], cmap="gray", vmin=0, vmax=1)
-    axes[1, 2].imshow(rc_np[x, :, :], cmap="gray", vmin=0, vmax=1)
     axes[0, 0].set_title("GT Axial")
     axes[0, 1].set_title("GT Coronal")
     axes[0, 2].set_title("GT Sagittal")
-    axes[1, 0].set_title("Recon Axial")
-    axes[1, 1].set_title("Recon Coronal")
-    axes[1, 2].set_title("Recon Sagittal")
+
+    # Row 2: Raw recon slices (normalized for visibility)
+    axes[1, 0].imshow(rc_vis[:, :, z], cmap="gray", vmin=0, vmax=1)
+    axes[1, 1].imshow(rc_vis[:, y, :], cmap="gray", vmin=0, vmax=1)
+    axes[1, 2].imshow(rc_vis[x, :, :], cmap="gray", vmin=0, vmax=1)
+    axes[1, 0].set_title("Recon(raw) Axial")
+    axes[1, 1].set_title("Recon(raw) Coronal")
+    axes[1, 2].set_title("Recon(raw) Sagittal")
+
+    # Row 3: Binary recon slices
+    axes[2, 0].imshow(rb_np[:, :, z], cmap="gray", vmin=0, vmax=1)
+    axes[2, 1].imshow(rb_np[:, y, :], cmap="gray", vmin=0, vmax=1)
+    axes[2, 2].imshow(rb_np[x, :, :], cmap="gray", vmin=0, vmax=1)
+    axes[2, 0].set_title("Recon(bin) Axial")
+    axes[2, 1].set_title("Recon(bin) Coronal")
+    axes[2, 2].set_title("Recon(bin) Sagittal")
+
+    # Row 4: MIP projections
+    axes[3, 0].imshow(np.max(gt_np, axis=2), cmap="gray", vmin=0, vmax=1)
+    axes[3, 1].imshow(np.max(rc_vis, axis=2), cmap="gray", vmin=0, vmax=1)
+    axes[3, 2].imshow(np.max(rb_np, axis=2), cmap="gray", vmin=0, vmax=1)
+    axes[3, 0].set_title("GT MIP(z)")
+    axes[3, 1].set_title("Recon(raw) MIP(z)")
+    axes[3, 2].set_title("Recon(bin) MIP(z)")
+
     for ax in axes.flatten():
         ax.axis("off")
     plt.tight_layout()
@@ -245,6 +281,7 @@ def main():
                         gt[b : b + 1].cpu(),
                         recon[b : b + 1].cpu(),
                         vis_dir / f"case_{vis_count:04d}.png",
+                        threshold=args.threshold,
                     )
                     vis_count += 1
 
