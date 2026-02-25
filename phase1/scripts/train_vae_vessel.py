@@ -46,7 +46,7 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--kl_weight", type=float, default=1e-6, help="Weight for KL divergence loss")
     parser.add_argument("--adv_weight", type=float, default=0.01, help="Weight for adversarial loss")
-    parser.add_argument("--perceptual_weight", type=float, default=0.001, help="Weight for perceptual loss")
+    parser.add_argument("--perceptual_weight", type=float, default=0.0, help="Weight for perceptual loss")
 
     # System
     parser.add_argument("--num_workers", type=int, default=4, help="Number of data loading workers")
@@ -241,9 +241,18 @@ def main():
     )
     discriminator = discriminator.to(device)
 
-    # Perceptual loss network (using a simple feature extractor)
-    perceptual_loss = PerceptualLoss(spatial_dims=3, network_type="squeeze", is_fake_3d=False, fake_3d_ratio=0.5)
-    perceptual_loss = perceptual_loss.to(device)
+    # Perceptual loss network (optional, disabled by default to avoid extra external downloads)
+    perceptual_loss = None
+    if args.perceptual_weight > 0:
+        perceptual_loss = PerceptualLoss(
+            spatial_dims=3,
+            network_type="squeeze",
+            is_fake_3d=True,
+            fake_3d_ratio=0.5,
+        ).to(device)
+        print(f"Perceptual loss enabled (weight={args.perceptual_weight})")
+    else:
+        print("Perceptual loss disabled (set --perceptual_weight > 0 to enable)")
 
     # Loss functions
     adv_loss = PatchAdversarialLoss(criterion="least_squares")
@@ -303,8 +312,11 @@ def main():
                 kl_loss = 0.5 * torch.sum(z_mu.pow(2) + z_sigma.pow(2) - torch.log(z_sigma.pow(2)) - 1, dim=[1, 2, 3, 4])
                 kl_loss = torch.mean(kl_loss)
 
-                # Perceptual loss
-                p_loss = perceptual_loss(reconstruction, images)
+                # Perceptual loss (optional)
+                if perceptual_loss is not None:
+                    p_loss = perceptual_loss(reconstruction, images)
+                else:
+                    p_loss = torch.tensor(0.0, device=device)
 
                 # Adversarial loss (generator)
                 logits_fake = discriminator(reconstruction)
