@@ -87,3 +87,24 @@ python .\phase1-codex\train_vae_3d_mask.py `
 - `checkpoints/autoencoderkl_best_weights.pt`: best model weights only
 - `checkpoints/autoencoderkl_final_weights.pt`: final epoch model weights only
 - `train_config.json`: training config snapshot
+
+## Evaluate Fine-Tuned VAE
+
+```bash
+cd /home/yinhaojie/GenerativeModels
+python ./phase1-codex/eval_vae_3d_mask.py \
+  --data_dir /home/yinhaojie/GenerativeModels/data/vessel_masks \
+  --model_path /home/yinhaojie/GenerativeModels/phase1-codex/outputs_vae_vessel_ft/checkpoints/autoencoderkl_best_weights.pt \
+  --output_dir /home/yinhaojie/GenerativeModels/phase1-codex/eval_vae_vessel_ft \
+  --split val \
+  --target_label 1 \
+  --spatial_size 64 64 64 \
+  --spatial_mode crop \
+  --threshold 0.5 \
+  --num_workers 4
+```
+
+Generated files:
+- `metrics_summary.json`: aggregated metrics (`dice_mean`, `iou_mean`, `mae_mean`, `volume_rel_error_mean`)
+- `per_case_metrics.csv`: per-case metrics
+- `visualizations/`: GT vs reconstruction 3-view comparison images
