@@ -26,6 +26,12 @@ from generative.losses import PatchAdversarialLoss, PerceptualLoss
 from generative.networks.nets import AutoencoderKL, PatchDiscriminator
 
 
+def tensor_only_collate(batch):
+    """Collate dict samples into plain torch.Tensor batches (avoid MONAI MetaTensor collation issues)."""
+    images = [torch.as_tensor(item["image"]).clone().detach() for item in batch]
+    return {"image": torch.stack(images, dim=0)}
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Train 3D VAE for vessel masks")
 
@@ -184,8 +190,22 @@ def main():
         train_ds = Dataset(data=train_dicts, transform=train_transforms)
         val_ds = Dataset(data=val_dicts, transform=val_transforms)
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, persistent_workers=True if args.num_workers > 0 else False)
-    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=args.num_workers, persistent_workers=True if args.num_workers > 0 else False)
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        persistent_workers=True if args.num_workers > 0 else False,
+        collate_fn=tensor_only_collate,
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=1,
+        shuffle=False,
+        num_workers=args.num_workers,
+        persistent_workers=True if args.num_workers > 0 else False,
+        collate_fn=tensor_only_collate,
+    )
 
     print(f"Train batches: {len(train_loader)}, Val batches: {len(val_loader)}")
 
