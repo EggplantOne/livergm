@@ -23,6 +23,19 @@ from monai.data import Dataset, DataLoader
 from generative.networks.nets import AutoencoderKL
 
 
+def tensor_only_collate(batch):
+    """Collate dict samples into plain torch.Tensor batches."""
+    images = []
+    for item in batch:
+        image = item["image"]
+        if hasattr(image, "as_tensor"):
+            image = image.as_tensor()
+        else:
+            image = torch.as_tensor(image)
+        images.append(image.clone().detach().float())
+    return {"image": torch.stack(images, dim=0)}
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Test trained VAE model")
     parser.add_argument("--model_path", type=str, required=True, help="Path to trained VAE model")
@@ -131,6 +144,14 @@ def visualize_reconstruction(original, reconstructed, save_path):
 
 def compute_metrics(original, reconstructed):
     """Compute reconstruction metrics."""
+    if original.shape != reconstructed.shape:
+        # Align to common spatial shape to avoid crashes on edge cases.
+        min_d = min(original.shape[2], reconstructed.shape[2])
+        min_h = min(original.shape[3], reconstructed.shape[3])
+        min_w = min(original.shape[4], reconstructed.shape[4])
+        original = original[:, :, :min_d, :min_h, :min_w]
+        reconstructed = reconstructed[:, :, :min_d, :min_h, :min_w]
+
     mse = torch.mean((original - reconstructed) ** 2).item()
     mae = torch.mean(torch.abs(original - reconstructed)).item()
 
@@ -347,13 +368,14 @@ def main():
     test_transforms = transforms.Compose([
         LoadMedicalImaged(keys=["image"]),
         transforms.EnsureChannelFirstd(keys=["image"], channel_dim=0),
+        transforms.SpatialPadd(keys=["image"], spatial_size=args.spatial_size),
         transforms.EnsureTyped(keys=["image"], track_meta=False),
         transforms.CenterSpatialCropd(keys=["image"], roi_size=args.spatial_size),
         transforms.ScaleIntensityRanged(keys=["image"], a_min=0, a_max=1, b_min=0, b_max=1, clip=True),
     ])
 
     test_ds = Dataset(data=data_dicts, transform=test_transforms)
-    test_loader = DataLoader(test_ds, batch_size=1, shuffle=False)
+    test_loader = DataLoader(test_ds, batch_size=1, shuffle=False, collate_fn=tensor_only_collate)
 
     # Run tests
     output_dir = Path(args.output_dir)

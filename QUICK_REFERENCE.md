@@ -22,16 +22,23 @@
     --spatial_size 64 64 64 \
     --batch_size 2 \
     --num_epochs 50 \
-    --lr 5e-5
+    --lr 5e-5 \
+    --perceptual_weight 0 \
+    --no_progress_bar \
+    --num_workers 0
 ```
 
 ### 4. 测试模型
 
 ```bash
 python phase1/scripts/test_vae.py \
-    --model_path ./outputs/vae_vessel/best_vae.pth \
-    --data_dir ./data/vessel_masks \
-    --output_dir ./test_results
+  --model_path /home/yinhaojie/GenerativeModels/outputs/vae_vessel/best_vae.pth \
+  --data_dir /home/yinhaojie/GenerativeModels/data/vessel_masks \
+  --output_dir /home/yinhaojie/GenerativeModels/test_results \
+  --spatial_size 64 64 64 \
+  --latent_channels 3 \
+  --num_channels 64 128 128 128 \
+  --attention_levels 0 0 0 0
 ```
 
 ### 5. 生成合成血管 ⭐
