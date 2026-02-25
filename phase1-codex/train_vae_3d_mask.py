@@ -50,6 +50,13 @@ def parse_args():
         choices=["crop", "resize"],
         help="crop: pad+crop patches, resize: direct resize to spatial_size",
     )
+    parser.add_argument(
+        "--roi_mode",
+        type=str,
+        default="foreground",
+        choices=["center", "foreground"],
+        help="Only used when spatial_mode=crop. foreground crops around vessel region before patch crop.",
+    )
     parser.add_argument("--batch_size", type=int, default=2)
     parser.add_argument("--num_epochs", type=int, default=200)
     parser.add_argument("--val_interval", type=int, default=5)
@@ -113,29 +120,57 @@ def split_data(paths, val_ratio, seed):
     return train, val
 
 
-def _spatial_ops_train(spatial_size, spatial_mode):
+def _spatial_ops_train(spatial_size, spatial_mode, roi_mode):
     if spatial_mode == "resize":
         return [
             transforms.Resized(keys=["mask"], spatial_size=spatial_size, mode="nearest-exact"),
         ]
-    return [
+    ops = []
+    if roi_mode == "foreground":
+        ops.append(
+            transforms.CropForegroundd(
+                keys=["mask"],
+                source_key="mask",
+                select_fn=lambda x: x > 0,
+                margin=8,
+                allow_smaller=True,
+            )
+        )
+    ops.extend(
+        [
         transforms.SpatialPadd(keys=["mask"], spatial_size=spatial_size),
         transforms.RandSpatialCropd(keys=["mask"], roi_size=spatial_size, random_size=False),
-    ]
+        ]
+    )
+    return ops
 
 
-def _spatial_ops_val(spatial_size, spatial_mode):
+def _spatial_ops_val(spatial_size, spatial_mode, roi_mode):
     if spatial_mode == "resize":
         return [
             transforms.Resized(keys=["mask"], spatial_size=spatial_size, mode="nearest-exact"),
         ]
-    return [
+    ops = []
+    if roi_mode == "foreground":
+        ops.append(
+            transforms.CropForegroundd(
+                keys=["mask"],
+                source_key="mask",
+                select_fn=lambda x: x > 0,
+                margin=8,
+                allow_smaller=True,
+            )
+        )
+    ops.extend(
+        [
         transforms.SpatialPadd(keys=["mask"], spatial_size=spatial_size),
         transforms.CenterSpatialCropd(keys=["mask"], roi_size=spatial_size),
-    ]
+        ]
+    )
+    return ops
 
 
-def build_transforms(spatial_size, spatial_mode, is_train, binarize, target_label):
+def build_transforms(spatial_size, spatial_mode, roi_mode, is_train, binarize, target_label):
     ops = [
         LoadMedicalMaskd(keys=["mask"]),
         transforms.EnsureChannelFirstd(keys=["mask"], channel_dim="no_channel"),
@@ -152,7 +187,7 @@ def build_transforms(spatial_size, spatial_mode, is_train, binarize, target_labe
         ops.append(transforms.Lambdad(keys=["mask"], func=lambda x: (x > 0.5).float()))
 
     if is_train:
-        ops.extend(_spatial_ops_train(spatial_size, spatial_mode))
+        ops.extend(_spatial_ops_train(spatial_size, spatial_mode, roi_mode))
         ops.extend(
             [
                 transforms.RandFlipd(keys=["mask"], prob=0.5, spatial_axis=0),
@@ -162,7 +197,7 @@ def build_transforms(spatial_size, spatial_mode, is_train, binarize, target_labe
             ]
         )
     else:
-        ops.extend(_spatial_ops_val(spatial_size, spatial_mode))
+        ops.extend(_spatial_ops_val(spatial_size, spatial_mode, roi_mode))
     return transforms.Compose(ops)
 
 
@@ -217,6 +252,7 @@ def main():
     train_tf = build_transforms(
         args.spatial_size,
         args.spatial_mode,
+        args.roi_mode,
         is_train=True,
         binarize=args.binarize,
         target_label=args.target_label,
@@ -224,6 +260,7 @@ def main():
     val_tf = build_transforms(
         args.spatial_size,
         args.spatial_mode,
+        args.roi_mode,
         is_train=False,
         binarize=args.binarize,
         target_label=args.target_label,

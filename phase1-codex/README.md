@@ -50,6 +50,7 @@ python ./phase1-codex/train_vae_3d_mask.py \
   --target_label 1 \
   --spatial_size 64 64 64 \
   --spatial_mode crop \
+  --roi_mode foreground \
   --batch_size 2 \
   --num_epochs 200 \
   --val_interval 5 \
