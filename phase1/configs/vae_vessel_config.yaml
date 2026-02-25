@@ -1,0 +1,45 @@
+# Configuration for 3D VAE Training on Vessel Masks
+# Phase 1 - Step 1: AutoencoderKL Training
+
+# Data Configuration
+data:
+  data_dir: "./data/vessel_masks"  # Directory containing NRRD vessel masks
+  cache_rate: 1.0  # Cache all data in memory (set to 0 if low RAM)
+  num_workers: 4
+
+# Model Architecture
+model:
+  spatial_size: [64, 64, 64]  # Training patch size (adjust based on GPU memory)
+  latent_channels: 3  # Number of latent channels
+  num_channels: [32, 64, 128]  # Channel multipliers for encoder/decoder
+  attention_levels: [0, 0, 1]  # Enable attention at last level only
+  num_res_blocks: 2
+  norm_num_groups: 32
+
+# Training Configuration
+training:
+  batch_size: 2  # Reduce if OOM
+  num_epochs: 100
+  lr: 1e-4
+  kl_weight: 1e-6  # Weight for KL divergence loss
+  adv_weight: 0.01  # Weight for adversarial loss
+  perceptual_weight: 0.001  # Weight for perceptual loss
+  val_interval: 5  # Validate every N epochs
+  save_interval: 10  # Save checkpoint every N epochs
+  seed: 42
+
+# Output
+output:
+  output_dir: "./outputs/vae_vessel"
+  tensorboard_dir: "./outputs/vae_vessel/logs"
+
+# Hardware
+hardware:
+  device: "cuda"  # or "cpu"
+  mixed_precision: true
+
+# Notes:
+# - For 128x128x128 patches, you may need 24GB+ GPU memory
+# - Start with 64x64x64 and batch_size=1 if you have limited memory
+# - Increase num_channels for better quality but more memory usage
+# - KL weight controls the regularization strength (lower = less regularization)

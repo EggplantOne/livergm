@@ -248,3 +248,44 @@ fabric.properties
 .idea/**/azureSettings.xml
 
 # End of https://www.toptal.com/developers/gitignore/api/jetbrains
+
+# ============================================
+# Project-specific: Generative Models
+# ============================================
+
+# Pretrained models (too large for Git)
+pretrained_models/
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+
+# Data files (too large for Git)
+data/
+*.nrrd
+*.nrrd.gz
+*.nii
+*.nii.gz
+*.dcm
+
+# Training outputs
+outputs/
+test_results/
+checkpoints/
+
+# TensorBoard logs
+logs/
+runs/
+tensorboard/
+
+# Training logs
+training.log
+nohup.out
+
+# Temporary files
+*.tmp
+*.temp
+
+# OS-specific
+.DS_Store
+Thumbs.db
