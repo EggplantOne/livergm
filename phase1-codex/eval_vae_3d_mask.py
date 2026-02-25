@@ -49,6 +49,8 @@ def parse_args():
     parser.add_argument("--target_label", type=int, default=1, help="Keep only this label as foreground")
     parser.add_argument("--binarize_input", action="store_true")
     parser.add_argument("--max_visualizations", type=int, default=20)
+    parser.add_argument("--save_volumes", action="store_true", help="Save GT/recon volumes as NIfTI files")
+    parser.add_argument("--max_saved_volumes", type=int, default=200, help="Maximum number of cases to export")
 
     # Model args (must match training architecture)
     parser.add_argument("--latent_channels", type=int, default=3)
@@ -196,12 +198,46 @@ def save_orthogonal_comparison(gt, recon, out_path, threshold=0.5):
     plt.close(fig)
 
 
+def _case_base_name(case_path: str):
+    name = Path(case_path).name
+    if name.endswith(".nii.gz"):
+        return name[:-7]
+    if name.endswith(".nii") or name.endswith(".nrrd") or name.endswith(".nhdr"):
+        return Path(name).stem
+    return Path(name).stem
+
+
+def save_volume_triplet(case_path, gt, recon, out_dir: Path, threshold=0.5, prefix=""):
+    gt_np = gt[0, 0].cpu().numpy().astype(np.float32)
+    rc_np = recon[0, 0].cpu().numpy().astype(np.float32)
+    rb_np = (rc_np > float(threshold)).astype(np.float32)
+
+    affine = np.eye(4, dtype=np.float32)
+    low = case_path.lower()
+    if low.endswith(".nii") or low.endswith(".nii.gz"):
+        try:
+            src = nib.load(case_path)
+            affine = src.affine.astype(np.float32)
+        except Exception:
+            pass
+
+    base = _case_base_name(case_path)
+    if prefix:
+        base = f"{prefix}_{base}"
+    nib.save(nib.Nifti1Image(gt_np, affine), str(out_dir / f"{base}_gt.nii.gz"))
+    nib.save(nib.Nifti1Image(rc_np, affine), str(out_dir / f"{base}_recon_raw.nii.gz"))
+    nib.save(nib.Nifti1Image(rb_np, affine), str(out_dir / f"{base}_recon_bin.nii.gz"))
+
+
 def main():
     args = parse_args()
     out_dir = Path(args.output_dir)
     vis_dir = out_dir / "visualizations"
+    vol_dir = out_dir / "volumes"
     out_dir.mkdir(parents=True, exist_ok=True)
     vis_dir.mkdir(parents=True, exist_ok=True)
+    if args.save_volumes:
+        vol_dir.mkdir(parents=True, exist_ok=True)
 
     files = find_medical_mask_files(Path(args.data_dir))
     train_data, val_data = split_data(files, args.val_ratio, args.seed)
@@ -246,6 +282,7 @@ def main():
 
     per_case = []
     vis_count = 0
+    vol_count = 0
     with torch.no_grad():
         for i, batch in enumerate(tqdm(dl, desc="Evaluating", ncols=100)):
             gt = batch["mask"].to(device)
@@ -284,6 +321,16 @@ def main():
                         threshold=args.threshold,
                     )
                     vis_count += 1
+                if args.save_volumes and vol_count < args.max_saved_volumes:
+                    save_volume_triplet(
+                        case_path=case_path,
+                        gt=gt[b : b + 1].cpu(),
+                        recon=recon[b : b + 1].cpu(),
+                        out_dir=vol_dir,
+                        threshold=args.threshold,
+                        prefix=f"case_{vol_count:04d}",
+                    )
+                    vol_count += 1
 
     def mean_of(key):
         return float(np.mean([x[key] for x in per_case])) if per_case else 0.0
@@ -312,6 +359,8 @@ def main():
     print(f"Saved summary: {out_dir / 'metrics_summary.json'}")
     print(f"Saved per-case: {out_dir / 'per_case_metrics.csv'}")
     print(f"Saved visualizations: {vis_dir}")
+    if args.save_volumes:
+        print(f"Saved volumes: {vol_dir} (count={vol_count})")
 
 
 if __name__ == "__main__":

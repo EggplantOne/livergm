@@ -105,7 +105,15 @@ python ./phase1-codex/eval_vae_3d_mask.py \
   --num_workers 4
 ```
 
+To export volumetric files (`GT`, `Recon(raw)`, `Recon(bin)` as `.nii.gz`), add:
+
+```bash
+  --save_volumes \
+  --max_saved_volumes 200
+```
+
 Generated files:
 - `metrics_summary.json`: aggregated metrics (`dice_mean`, `iou_mean`, `mae_mean`, `volume_rel_error_mean`)
 - `per_case_metrics.csv`: per-case metrics
 - `visualizations/`: GT vs reconstruction 3-view comparison images
+- `volumes/` (optional): per-case `*_gt.nii.gz`, `*_recon_raw.nii.gz`, `*_recon_bin.nii.gz`
