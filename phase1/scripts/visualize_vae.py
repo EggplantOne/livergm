@@ -43,8 +43,8 @@ def parse_args():
     parser.add_argument("--attention_levels", type=int, nargs="+", default=[0, 0, 0, 0], help="Attention levels")
 
     # Sampling parameters
-    parser.add_argument("--latent_size", type=int, nargs=3, default=[8, 8, 8], help="Latent spatial size")
-    parser.add_argument("--output_size", type=int, nargs=3, default=[64, 64, 64], help="Output volume size")
+    parser.add_argument("--latent_size", type=int, nargs=3, default=[16, 16, 16], help="Latent spatial size (spatial_size / 8)")
+    parser.add_argument("--output_size", type=int, nargs=3, default=[128, 128, 128], help="Output volume size (must match training)")
 
     return parser.parse_args()
 
@@ -277,10 +277,16 @@ def reconstruct_real_data(
             data = load_medical_image(filepath)
             if data.ndim == 3:
                 data = data[np.newaxis, ...]
-            data = center_crop_or_pad_3d(data, tuple(target_size))
+
+            # Resize to target size (consistent with training)
+            data_resized = np.zeros((data.shape[0], *target_size), dtype=data.dtype)
+            for c in range(data.shape[0]):
+                from scipy.ndimage import zoom
+                zoom_factors = [t / s for t, s in zip(target_size, data.shape[1:])]
+                data_resized[c] = zoom(data[c], zoom_factors, order=0)  # nearest neighbor for masks
 
             # Convert to tensor
-            data_tensor = torch.from_numpy(data).float().unsqueeze(0).to(recon_device)
+            data_tensor = torch.from_numpy(data_resized).float().unsqueeze(0).to(recon_device)
 
             # Normalize
             data_tensor = (data_tensor - data_tensor.min()) / (data_tensor.max() - data_tensor.min() + 1e-8)

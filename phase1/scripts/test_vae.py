@@ -42,7 +42,7 @@ def parse_args():
     parser.add_argument("--data_dir", type=str, required=True, help="Directory containing test NRRD files")
     parser.add_argument("--output_dir", type=str, default="./test_results", help="Output directory for visualizations")
     parser.add_argument("--num_samples", type=int, default=5, help="Number of samples to test")
-    parser.add_argument("--spatial_size", type=int, nargs=3, default=[64, 64, 64], help="Spatial size")
+    parser.add_argument("--spatial_size", type=int, nargs=3, default=[128, 128, 128], help="Spatial size (must match training)")
 
     # Model architecture (must match training config)
     parser.add_argument("--latent_channels", type=int, default=3, help="Number of latent channels")
@@ -364,13 +364,12 @@ def main():
 
     data_dicts = [{"image": str(f)} for f in all_files[:args.num_samples * 2]]
 
-    # Create transforms
+    # Create transforms (use Resize to match training)
     test_transforms = transforms.Compose([
         LoadMedicalImaged(keys=["image"]),
         transforms.EnsureChannelFirstd(keys=["image"], channel_dim=0),
-        transforms.SpatialPadd(keys=["image"], spatial_size=args.spatial_size),
         transforms.EnsureTyped(keys=["image"], track_meta=False),
-        transforms.CenterSpatialCropd(keys=["image"], roi_size=args.spatial_size),
+        transforms.Resized(keys=["image"], spatial_size=args.spatial_size, mode="nearest"),
         transforms.ScaleIntensityRanged(keys=["image"], a_min=0, a_max=1, b_min=0, b_max=1, clip=True),
     ])
 

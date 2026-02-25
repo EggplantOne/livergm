@@ -48,7 +48,7 @@ def parse_args():
     parser.add_argument("--cache_rate", type=float, default=1.0, help="Cache rate for data loading (0-1)")
 
     # Model architecture
-    parser.add_argument("--spatial_size", type=int, nargs=3, default=[64, 64, 64], help="Spatial size for training patches")
+    parser.add_argument("--spatial_size", type=int, nargs=3, default=[128, 128, 128], help="Spatial size for training (complete vessel)")
     parser.add_argument("--latent_channels", type=int, default=3, help="Number of latent channels")
     parser.add_argument("--num_channels", type=int, nargs="+", default=[64, 128, 128, 128], help="Channel multipliers")
     parser.add_argument("--attention_levels", type=int, nargs="+", default=[0, 0, 0, 0], help="Attention at each level")
@@ -149,10 +149,9 @@ def get_transforms(spatial_size, is_train=True):
     ]
 
     if is_train:
-        # Training: random crop + augmentation
+        # Training: resize to fixed size + augmentation (to see complete vessel structure)
         train_transforms = base_transforms + [
-            transforms.SpatialPadd(keys=["image"], spatial_size=spatial_size),
-            transforms.RandSpatialCropd(keys=["image"], roi_size=spatial_size, random_size=False),
+            transforms.Resized(keys=["image"], spatial_size=spatial_size, mode="nearest"),
             transforms.RandFlipd(keys=["image"], prob=0.5, spatial_axis=0),
             transforms.RandFlipd(keys=["image"], prob=0.5, spatial_axis=1),
             transforms.RandFlipd(keys=["image"], prob=0.5, spatial_axis=2),
@@ -162,10 +161,9 @@ def get_transforms(spatial_size, is_train=True):
         train_transforms.append(transforms.ScaleIntensityRanged(keys=["image"], a_min=0, a_max=1, b_min=0, b_max=1, clip=True))
         return transforms.Compose(train_transforms)
     else:
-        # Validation: center crop only
+        # Validation: resize to fixed size (consistent with training)
         val_transforms = base_transforms + [
-            transforms.SpatialPadd(keys=["image"], spatial_size=spatial_size),
-            transforms.CenterSpatialCropd(keys=["image"], roi_size=spatial_size),
+            transforms.Resized(keys=["image"], spatial_size=spatial_size, mode="nearest"),
             transforms.ScaleIntensityRanged(keys=["image"], a_min=0, a_max=1, b_min=0, b_max=1, clip=True),
         ]
         return transforms.Compose(val_transforms)
