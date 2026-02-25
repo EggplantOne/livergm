@@ -53,6 +53,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--val_interval", type=int, default=5, help="Validation interval (epochs)")
     parser.add_argument("--save_interval", type=int, default=10, help="Checkpoint save interval (epochs)")
+    parser.add_argument("--no_progress_bar", action="store_true", help="Disable tqdm progress bars")
 
     # Pretrained model
     parser.add_argument("--pretrained_model", type=str, default=None, help="Path to pretrained VAE model for fine-tuning")
@@ -124,7 +125,7 @@ def get_transforms(spatial_size, is_train=True):
     base_transforms = [
         LoadMedicalImaged(keys=["image"]),
         transforms.EnsureChannelFirstd(keys=["image"], channel_dim=0),
-        transforms.EnsureTyped(keys=["image"]),
+        transforms.EnsureTyped(keys=["image"], track_meta=False),
     ]
 
     if is_train:
@@ -294,7 +295,11 @@ def main():
         epoch_gen_loss = 0
         epoch_disc_loss = 0
 
-        progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.num_epochs}")
+        progress_bar = tqdm(
+            train_loader,
+            desc=f"Epoch {epoch+1}/{args.num_epochs}",
+            disable=args.no_progress_bar,
+        )
 
         for batch_idx, batch in enumerate(progress_bar):
             images = batch["image"].to(device)
@@ -351,11 +356,12 @@ def main():
             epoch_gen_loss += generator_loss.item()
             epoch_disc_loss += loss_d.item()
 
-            progress_bar.set_postfix({
-                "loss": f"{loss_g.item():.4f}",
-                "recon": f"{recon_loss.item():.4f}",
-                "kl": f"{kl_loss.item():.6f}",
-            })
+            if not args.no_progress_bar:
+                progress_bar.set_postfix({
+                    "loss": f"{loss_g.item():.4f}",
+                    "recon": f"{recon_loss.item():.4f}",
+                    "kl": f"{kl_loss.item():.6f}",
+                })
 
             # TensorBoard logging
             if global_step % 10 == 0:
