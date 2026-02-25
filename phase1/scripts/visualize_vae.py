@@ -34,6 +34,8 @@ def parse_args():
     # Optional: provide real data for reconstruction
     parser.add_argument("--data_dir", type=str, default=None, help="Directory with real data for reconstruction")
     parser.add_argument("--num_reconstructions", type=int, default=5, help="Number of reconstructions to show")
+    parser.add_argument("--reconstruct_on_cpu", action="store_true",
+                        help="Run real-data reconstruction on CPU to avoid CUDA OOM")
 
     # Model architecture (must match training)
     parser.add_argument("--latent_channels", type=int, default=3, help="Number of latent channels")
@@ -70,6 +72,52 @@ def save_volume(volume, filepath, format="nrrd"):
     elif format == "nifti":
         img = nib.Nifti1Image(volume, affine=np.eye(4))
         nib.save(img, str(filepath))
+
+
+def center_crop_or_pad_3d(volume, target_size):
+    """Center crop or pad a (C, H, W, D) volume to target_size=(H, W, D)."""
+    if volume.ndim != 4:
+        raise ValueError(f"Expected volume shape (C, H, W, D), got {volume.shape}")
+
+    c, h, w, d = volume.shape
+    th, tw, td = target_size
+
+    # Center crop when input is larger than target.
+    sh = max((h - th) // 2, 0)
+    sw = max((w - tw) // 2, 0)
+    sd = max((d - td) // 2, 0)
+    eh = min(sh + th, h)
+    ew = min(sw + tw, w)
+    ed = min(sd + td, d)
+    cropped = volume[:, sh:eh, sw:ew, sd:ed]
+
+    # Center pad when cropped shape is smaller than target.
+    _, ch, cw, cd = cropped.shape
+    ph = max(th - ch, 0)
+    pw = max(tw - cw, 0)
+    pd = max(td - cd, 0)
+
+    pad_h_before = ph // 2
+    pad_h_after = ph - pad_h_before
+    pad_w_before = pw // 2
+    pad_w_after = pw - pad_w_before
+    pad_d_before = pd // 2
+    pad_d_after = pd - pad_d_before
+
+    if ph > 0 or pw > 0 or pd > 0:
+        cropped = np.pad(
+            cropped,
+            (
+                (0, 0),
+                (pad_h_before, pad_h_after),
+                (pad_w_before, pad_w_after),
+                (pad_d_before, pad_d_after),
+            ),
+            mode="constant",
+            constant_values=0,
+        )
+
+    return cropped
 
 
 def visualize_3d_volume(volume, title, save_path, num_slices=5):
@@ -182,7 +230,16 @@ def generate_synthetic_samples(model, device, num_samples, latent_shape, output_
     print(f"📁 Saved to: {output_dir}")
 
 
-def reconstruct_real_data(model, data_dir, device, num_reconstructions, output_dir, save_format):
+def reconstruct_real_data(
+    model,
+    data_dir,
+    device,
+    num_reconstructions,
+    output_dir,
+    save_format,
+    target_size,
+    reconstruct_on_cpu=False,
+):
     """Reconstruct real vessel masks."""
     print("\n" + "="*60)
     print("Reconstructing Real Vessel Masks")
@@ -206,7 +263,13 @@ def reconstruct_real_data(model, data_dir, device, num_reconstructions, output_d
     output_dir = Path(output_dir) / "reconstructions"
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    recon_device = torch.device("cpu") if reconstruct_on_cpu else device
+    if next(model.parameters()).device != recon_device:
+        model = model.to(recon_device)
     model.eval()
+
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
 
     with torch.no_grad():
         for i, filepath in enumerate(files_to_reconstruct):
@@ -214,9 +277,10 @@ def reconstruct_real_data(model, data_dir, device, num_reconstructions, output_d
             data = load_medical_image(filepath)
             if data.ndim == 3:
                 data = data[np.newaxis, ...]
+            data = center_crop_or_pad_3d(data, tuple(target_size))
 
             # Convert to tensor
-            data_tensor = torch.from_numpy(data).float().unsqueeze(0).to(device)
+            data_tensor = torch.from_numpy(data).float().unsqueeze(0).to(recon_device)
 
             # Normalize
             data_tensor = (data_tensor - data_tensor.min()) / (data_tensor.max() - data_tensor.min() + 1e-8)
@@ -276,6 +340,10 @@ def reconstruct_real_data(model, data_dir, device, num_reconstructions, output_d
 
             print(f"  Saved to: {save_path}")
 
+            del data_tensor, reconstruction, z_mu, z_sigma
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+
     print(f"\n✅ Reconstructed {len(files_to_reconstruct)} vessel masks")
     print(f"📁 Saved to: {output_dir}")
 
@@ -321,11 +389,13 @@ def main():
     latent_shape = (args.latent_channels, *args.latent_size)
     generate_synthetic_samples(model, device, args.num_samples, latent_shape,
                               output_dir, args.save_format)
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
 
     # Reconstruct real data if provided
     if args.data_dir:
         reconstruct_real_data(model, args.data_dir, device, args.num_reconstructions,
-                            output_dir, args.save_format)
+                            output_dir, args.save_format, args.output_size, args.reconstruct_on_cpu)
 
     print("\n" + "="*60)
     print("✅ All visualizations completed!")

@@ -65,7 +65,7 @@ python phase1/scripts/visualize_vae.py \
     --output_dir ./visualizations \
     --num_samples 10 \
     --num_reconstructions 5 \
-    --save_format nrrd
+    --save_format nii
 ```
 
 **参数说明：**
