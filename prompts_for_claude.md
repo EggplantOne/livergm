@@ -18,7 +18,7 @@
 - Phase 4：DCL 联合优化（后续再做）
 
 我的数据：
-- 3D 肝脏 CT 图像和对应的血管标注 mask，NRRD 格式
+- 3D 肝脏 CT 图像和对应的血管标注 mask，nii 格式
 - 数据量较少（few-shot 场景），所以需要合成数据增强
 
 当前目录是 MONAI GenerativeModels 的代码库，里面有我需要的所有 3D 组件：
@@ -47,12 +47,11 @@
 - generative/networks/nets/autoencoderkl.py 的实现
 
 我需要你帮我写一个训练脚本，要求：
-1. 数据加载：读取 NRRD 格式的 3D 血管 mask，裁剪/resize 到合适的 patch size（比如 64x64x64 或 128x128x128，根据显存决定）
+1. 数据加载：读取 nii 格式的 3D 血管 mask，裁剪/resize 到合适的 patch size（比如 64x64x64 或 128x128x128，根据显存决定）
 2. 模型：AutoencoderKL，spatial_dims=3，参考脑部 MRI 模型的配置但适当调整
 3. 训练目标：重建损失 + KL 损失，让 VAE 学会压缩和重建 3D mask
 4. 保存训练好的 VAE 权重，后续 Phase 1 的扩散模型和 Phase 2 都要复用
 
-先分析一下教程代码和脑部 MRI 的配置，然后给出训练脚本。
 ```
 
 ---
