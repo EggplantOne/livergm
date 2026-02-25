@@ -37,8 +37,8 @@ def parse_args():
     # Model architecture
     parser.add_argument("--spatial_size", type=int, nargs=3, default=[64, 64, 64], help="Spatial size for training patches")
     parser.add_argument("--latent_channels", type=int, default=3, help="Number of latent channels")
-    parser.add_argument("--num_channels", type=int, nargs="+", default=[32, 64, 128], help="Channel multipliers")
-    parser.add_argument("--attention_levels", type=int, nargs="+", default=[False, False, True], help="Attention at each level")
+    parser.add_argument("--num_channels", type=int, nargs="+", default=[64, 128, 128, 128], help="Channel multipliers")
+    parser.add_argument("--attention_levels", type=int, nargs="+", default=[0, 0, 0, 0], help="Attention at each level")
 
     # Training
     parser.add_argument("--batch_size", type=int, default=2, help="Batch size")
@@ -59,11 +59,16 @@ def parse_args():
     parser.add_argument("--pretrained_model", type=str, default=None, help="Path to pretrained VAE model for fine-tuning")
     parser.add_argument("--freeze_encoder", action="store_true", help="Freeze encoder weights during fine-tuning")
     parser.add_argument("--resume_from", type=str, default=None, help="Resume training from checkpoint")
+    parser.add_argument(
+        "--allow_scratch_fallback",
+        action="store_true",
+        help="If pretrained loading fails, continue training from scratch instead of raising an error.",
+    )
 
     return parser.parse_args()
 
 
-def get_data_dicts(data_dir):
+def get_data_dicts(data_dir, seed=42):
     """Scan directory for NRRD and NIfTI files and create data dictionaries."""
     data_dir = Path(data_dir)
 
@@ -82,6 +87,8 @@ def get_data_dicts(data_dir):
     data_dicts = [{"image": str(f)} for f in all_files]
 
     # Split into train/val (90/10)
+    rng = np.random.default_rng(seed)
+    rng.shuffle(data_dicts)
     split_idx = int(len(data_dicts) * 0.9)
     train_dicts = data_dicts[:split_idx]
     val_dicts = data_dicts[split_idx:]
@@ -164,7 +171,7 @@ def main():
     print(f"Using device: {device}")
 
     # Get data
-    train_dicts, val_dicts = get_data_dicts(args.data_dir)
+    train_dicts, val_dicts = get_data_dicts(args.data_dir, seed=args.seed)
 
     # Create datasets
     train_transforms = get_transforms(args.spatial_size, is_train=True)
@@ -218,8 +225,16 @@ def main():
 
             print("Pretrained model loaded successfully!")
         except Exception as e:
-            print(f"Error loading pretrained model: {e}")
-            print("Starting from scratch...")
+            message = (
+                f"Failed to load pretrained model at {args.pretrained_model}. "
+                "Check that model architecture arguments match the checkpoint "
+                f"(latent_channels/num_channels/attention_levels). Original error: {e}"
+            )
+            if args.allow_scratch_fallback:
+                print(message)
+                print("Falling back to training from scratch because --allow_scratch_fallback is set.")
+            else:
+                raise RuntimeError(message) from e
 
     # Freeze encoder if specified
     if args.freeze_encoder:

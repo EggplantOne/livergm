@@ -33,8 +33,8 @@ def parse_args():
 
     # Model architecture (must match training config)
     parser.add_argument("--latent_channels", type=int, default=3, help="Number of latent channels")
-    parser.add_argument("--num_channels", type=int, nargs="+", default=[32, 64, 128], help="Channel multipliers")
-    parser.add_argument("--attention_levels", type=int, nargs="+", default=[0, 0, 1], help="Attention levels")
+    parser.add_argument("--num_channels", type=int, nargs="+", default=[64, 128, 128, 128], help="Channel multipliers")
+    parser.add_argument("--attention_levels", type=int, nargs="+", default=[0, 0, 0, 0], help="Attention levels")
 
     return parser.parse_args()
 
@@ -200,8 +200,11 @@ def test_latent_interpolation(model, data_loader, device, output_dir, num_steps=
     with torch.no_grad():
         # Get two samples
         batch_iter = iter(data_loader)
-        batch1 = next(batch_iter)
-        batch2 = next(batch_iter)
+        try:
+            batch1 = next(batch_iter)
+            batch2 = next(batch_iter)
+        except StopIteration as exc:
+            raise RuntimeError("Need at least 2 samples in data_loader for interpolation.") from exc
 
         img1 = batch1["image"].to(device)
         img2 = batch2["image"].to(device)
@@ -239,7 +242,7 @@ def test_latent_interpolation(model, data_loader, device, output_dir, num_steps=
         print(f"Saved interpolation to {save_path}\n")
 
 
-def test_random_sampling(model, device, output_dir, num_samples=5):
+def test_random_sampling(model, device, output_dir, spatial_size, num_samples=5):
     """Test random sampling from latent space."""
     model.eval()
     output_dir = Path(output_dir)
@@ -250,9 +253,10 @@ def test_random_sampling(model, device, output_dir, num_samples=5):
     print("="*60)
 
     with torch.no_grad():
-        # Get latent shape from model
-        # Assuming spatial_size // 8 for latent (depends on num_channels length)
-        latent_spatial = [s // (2 ** (len(model.encoder.down_blocks))) for s in [64, 64, 64]]
+        # Infer latent shape from the current model by a single encode pass.
+        dummy = torch.zeros(1, 1, *spatial_size, device=device)
+        z_mu, _ = model.encode(dummy)
+        latent_spatial = list(z_mu.shape[2:])
         latent_shape = (num_samples, model.latent_channels, *latent_spatial)
 
         print(f"Sampling {num_samples} random latent codes...")
@@ -343,7 +347,7 @@ def main():
     test_transforms = transforms.Compose([
         LoadMedicalImaged(keys=["image"]),
         transforms.EnsureChannelFirstd(keys=["image"], channel_dim=0),
-        transforms.EnsureTyped(keys=["image"]),
+        transforms.EnsureTyped(keys=["image"], track_meta=False),
         transforms.CenterSpatialCropd(keys=["image"], roi_size=args.spatial_size),
         transforms.ScaleIntensityRanged(keys=["image"], a_min=0, a_max=1, b_min=0, b_max=1, clip=True),
     ])
@@ -361,7 +365,7 @@ def main():
     test_latent_interpolation(model, test_loader, device, output_dir / "interpolation")
 
     # Test 3: Random sampling
-    test_random_sampling(model, device, output_dir / "random_samples")
+    test_random_sampling(model, device, output_dir / "random_samples", args.spatial_size)
 
     print("\n" + "="*60)
     print("All tests completed!")

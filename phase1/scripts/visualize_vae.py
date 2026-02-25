@@ -39,8 +39,8 @@ def parse_args():
 
     # Model architecture (must match training)
     parser.add_argument("--latent_channels", type=int, default=3, help="Number of latent channels")
-    parser.add_argument("--num_channels", type=int, nargs="+", default=[32, 64, 128], help="Channel multipliers")
-    parser.add_argument("--attention_levels", type=int, nargs="+", default=[0, 0, 1], help="Attention levels")
+    parser.add_argument("--num_channels", type=int, nargs="+", default=[64, 128, 128, 128], help="Channel multipliers")
+    parser.add_argument("--attention_levels", type=int, nargs="+", default=[0, 0, 0, 0], help="Attention levels")
 
     # Sampling parameters
     parser.add_argument("--latent_size", type=int, nargs=3, default=[8, 8, 8], help="Latent spatial size")
