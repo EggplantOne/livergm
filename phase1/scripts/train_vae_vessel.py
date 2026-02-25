@@ -28,7 +28,14 @@ from generative.networks.nets import AutoencoderKL, PatchDiscriminator
 
 def tensor_only_collate(batch):
     """Collate dict samples into plain torch.Tensor batches (avoid MONAI MetaTensor collation issues)."""
-    images = [torch.as_tensor(item["image"]).clone().detach() for item in batch]
+    images = []
+    for item in batch:
+        image = item["image"]
+        if hasattr(image, "as_tensor"):
+            image = image.as_tensor()
+        else:
+            image = torch.as_tensor(image)
+        images.append(image.clone().detach().float())
     return {"image": torch.stack(images, dim=0)}
 
 
@@ -144,6 +151,7 @@ def get_transforms(spatial_size, is_train=True):
     if is_train:
         # Training: random crop + augmentation
         train_transforms = base_transforms + [
+            transforms.SpatialPadd(keys=["image"], spatial_size=spatial_size),
             transforms.RandSpatialCropd(keys=["image"], roi_size=spatial_size, random_size=False),
             transforms.RandFlipd(keys=["image"], prob=0.5, spatial_axis=0),
             transforms.RandFlipd(keys=["image"], prob=0.5, spatial_axis=1),
@@ -156,6 +164,7 @@ def get_transforms(spatial_size, is_train=True):
     else:
         # Validation: center crop only
         val_transforms = base_transforms + [
+            transforms.SpatialPadd(keys=["image"], spatial_size=spatial_size),
             transforms.CenterSpatialCropd(keys=["image"], roi_size=spatial_size),
             transforms.ScaleIntensityRanged(keys=["image"], a_min=0, a_max=1, b_min=0, b_max=1, clip=True),
         ]
