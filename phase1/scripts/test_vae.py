@@ -342,7 +342,7 @@ def main():
     # Create transforms
     test_transforms = transforms.Compose([
         LoadMedicalImaged(keys=["image"]),
-        transforms.EnsureChannelFirstd(keys=["image"]),
+        transforms.EnsureChannelFirstd(keys=["image"], channel_dim=0),
         transforms.EnsureTyped(keys=["image"]),
         transforms.CenterSpatialCropd(keys=["image"], roi_size=args.spatial_size),
         transforms.ScaleIntensityRanged(keys=["image"], a_min=0, a_max=1, b_min=0, b_max=1, clip=True),

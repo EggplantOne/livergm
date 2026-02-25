@@ -123,9 +123,8 @@ def get_transforms(spatial_size, is_train=True):
     """Create data transforms for vessel masks."""
     base_transforms = [
         LoadMedicalImaged(keys=["image"]),
-        transforms.EnsureChannelFirstd(keys=["image"]),
+        transforms.EnsureChannelFirstd(keys=["image"], channel_dim=0),
         transforms.EnsureTyped(keys=["image"]),
-        transforms.Orientationd(keys=["image"], axcodes="RAS"),
     ]
 
     if is_train:

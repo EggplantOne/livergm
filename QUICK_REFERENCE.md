@@ -11,7 +11,16 @@ phase1/
 ├── quickstart_vae.bat# Windows启动
 └── README.md         # Phase 1说明
 ```
-
+  python phase1/scripts/visualize_vae.py \
+    --model_path /home/yinhaojie/GenerativeModels/pretrained_models/autoencoder.pth \
+    --data_dir ./data/vessel_masks \
+    --output_dir ./visualizations \
+    --num_samples 10 \
+    --latent_channels 3 \
+    --num_channels 64 128 128 128 \
+    --attention_levels 0 0 0 0 \
+    --output_size 64 64 64 \
+    --reconstruct_on_cpu
 ---
 
 ## ⚡ 快速命令
@@ -37,10 +46,10 @@ python phase1/scripts/download_pretrained_vae.py \
 ### 3. 训练 VAE
 
 ```bash
-python phase1/scripts/train_vae_vessel.py \
-    --data_dir ./data/vessel_masks \
-    --output_dir ./outputs/vae_vessel \
-    --pretrained_model ./pretrained_models/brain_mri_autoencoder.pth \
+  python phase1/scripts/train_vae_vessel.py \
+    --data_dir /home/yinhaojie/GenerativeModels/data/vessel_masks \
+    --output_dir /home/yinhaojie/GenerativeModels/outputs/vae_vessel \
+    --pretrained_model /home/yinhaojie/GenerativeModels/pretrained_models/autoencoder.pth \
     --spatial_size 64 64 64 \
     --batch_size 2 \
     --num_epochs 50 \
