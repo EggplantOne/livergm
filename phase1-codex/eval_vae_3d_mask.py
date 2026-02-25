@@ -39,6 +39,13 @@ def parse_args():
     parser.add_argument("--output_dir", type=str, default="./phase1-codex/eval_vae")
     parser.add_argument("--spatial_size", type=int, nargs=3, default=[64, 64, 64])
     parser.add_argument("--spatial_mode", type=str, default="crop", choices=["crop", "resize"])
+    parser.add_argument(
+        "--roi_mode",
+        type=str,
+        default="center",
+        choices=["center", "foreground"],
+        help="Only used when spatial_mode=crop. foreground crops around vessel mask before pad/crop.",
+    )
     parser.add_argument("--split", type=str, default="val", choices=["val", "train", "all"])
     parser.add_argument("--val_ratio", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
@@ -83,7 +90,7 @@ def split_data(paths, val_ratio, seed):
     return train, val
 
 
-def build_transforms(spatial_size, spatial_mode, target_label, binarize_input):
+def build_transforms(spatial_size, spatial_mode, target_label, binarize_input, roi_mode):
     ops = [
         LoadMedicalMaskd(keys=["mask"]),
         transforms.EnsureChannelFirstd(keys=["mask"], channel_dim="no_channel"),
@@ -99,6 +106,16 @@ def build_transforms(spatial_size, spatial_mode, target_label, binarize_input):
     if spatial_mode == "resize":
         ops.append(transforms.Resized(keys=["mask"], spatial_size=spatial_size, mode="nearest-exact"))
     else:
+        if roi_mode == "foreground":
+            ops.append(
+                transforms.CropForegroundd(
+                    keys=["mask"],
+                    source_key="mask",
+                    select_fn=lambda x: x > 0,
+                    margin=8,
+                    allow_smaller=True,
+                )
+            )
         ops.extend(
             [
                 transforms.SpatialPadd(keys=["mask"], spatial_size=spatial_size),
@@ -254,6 +271,7 @@ def main():
         spatial_mode=args.spatial_mode,
         target_label=args.target_label,
         binarize_input=args.binarize_input,
+        roi_mode=args.roi_mode,
     )
     if args.cache_rate > 0:
         ds = CacheDataset(eval_data, transform=tf, cache_rate=args.cache_rate, num_workers=args.num_workers)

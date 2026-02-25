@@ -92,16 +92,20 @@ python .\phase1-codex\train_vae_3d_mask.py `
 
 ```bash
 cd /home/yinhaojie/GenerativeModels
-cd /home/yinhaojie/GenerativeModels
-python ./phase1-codex/eval_vae_3d_mask.py \
-  --data_dir /home/yinhaojie/GenerativeModels/data/vessel_masks \
-  --model_path /home/yinhaojie/GenerativeModels/phase1-codex/outputs_vae_vessel_ft/checkpoints/autoencoderkl_best_weights.pt \
-  --output_dir /home/yinhaojie/GenerativeModels/phase1-codex/eval_vae_vessel_ft \
-  --split val \
+
+python phase1-codex/eval_vae_3d_mask.py \
+  --data_dir data/vessel_masks \
+  --model_path phase1-codex/outputs_vae_vessel_ft/checkpoints/autoencoderkl_best_weights.pt \
+  --output_dir phase1-codex/eval_vae_vessel_ft_all \
+  --split all \
   --target_label 1 \
   --spatial_size 64 64 64 \
   --spatial_mode crop \
+  --roi_mode foreground \
   --threshold 0.5 \
+  --save_volumes \
+  --max_saved_volumes 1000 \
+  --max_visualizations 1000 \
   --num_workers 4
 ```
 
