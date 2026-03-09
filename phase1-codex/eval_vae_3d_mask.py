@@ -1,286 +1,66 @@
+from __future__ import annotations
+
 import argparse
 import csv
 import json
-import random
+import sys
 from pathlib import Path
 
-import matplotlib.pyplot as plt
-import nibabel as nib
-import nrrd
 import numpy as np
 import torch
 import torch.nn.functional as F
-from monai import transforms
-from monai.data import CacheDataset, DataLoader, Dataset
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from generative.networks.nets import AutoencoderKL
+from vessel_ldm_utils import (
+    VesselMaskPtDataset,
+    dice_score,
+    extract_state_dict,
+    infer_case_name,
+    iou_score,
+    save_generated_overview,
+    save_json,
+    save_nifti_volume,
+    save_recon_comparison,
+    set_seed,
+    split_pt_files_train_val_test,
+    vessel_ratio,
+    volume_relative_error,
+)
 
 
-class LoadMedicalMaskd(transforms.MapTransform):
-    def __call__(self, data):
-        d = dict(data)
-        for key in self.keys:
-            path = str(d[key]).lower()
-            if path.endswith(".nrrd") or path.endswith(".nhdr"):
-                arr, _ = nrrd.read(d[key])
-            elif path.endswith(".nii") or path.endswith(".nii.gz"):
-                arr = nib.load(d[key]).get_fdata()
-            else:
-                raise ValueError(f"Unsupported file format: {d[key]}")
-            d[key] = np.asarray(arr, dtype=np.float32)
-        return d
-
-
-def parse_args():
-    parser = argparse.ArgumentParser("Evaluate 3D AutoencoderKL for vessel masks")
-    parser.add_argument("--data_dir", type=str, required=True)
-    parser.add_argument("--model_path", type=str, required=True, help="Path to weights or checkpoint")
-    parser.add_argument("--output_dir", type=str, default="./phase1-codex/eval_vae")
-    parser.add_argument("--spatial_size", type=int, nargs=3, default=[64, 64, 64])
-    parser.add_argument("--spatial_mode", type=str, default="crop", choices=["crop", "resize"])
-    parser.add_argument(
-        "--roi_mode",
-        type=str,
-        default="center",
-        choices=["center", "foreground"],
-        help="Only used when spatial_mode=crop. foreground crops around vessel mask before pad/crop.",
-    )
-    parser.add_argument("--split", type=str, default="val", choices=["val", "train", "all"])
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser("Evaluate 3D AutoencoderKL for hepatic vessel mask caches")
+    parser.add_argument("--cache_dir", type=str, required=True)
+    parser.add_argument("--model_path", type=str, required=True, help="Path to state_dict or training checkpoint")
+    parser.add_argument("--output_dir", type=str, default="./phase1-codex/eval_vae_vessel")
+    parser.add_argument("--split", type=str, default="val", choices=["train", "val", "test", "all"])
     parser.add_argument("--val_ratio", type=float, default=0.1)
+    parser.add_argument("--test_ratio", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--num_workers", type=int, default=4)
-    parser.add_argument("--cache_rate", type=float, default=0.0)
-    parser.add_argument("--threshold", type=float, default=0.5, help="Threshold for binary metrics")
-    parser.add_argument("--target_label", type=int, default=1, help="Keep only this label as foreground")
-    parser.add_argument("--binarize_input", action="store_true")
+    parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--max_visualizations", type=int, default=20)
-    parser.add_argument("--save_volumes", action="store_true", help="Save GT/recon volumes as NIfTI files")
-    parser.add_argument("--max_saved_volumes", type=int, default=200, help="Maximum number of cases to export")
-
-    # Model args (must match training architecture)
+    parser.add_argument("--save_volumes", action="store_true")
+    parser.add_argument("--max_saved_volumes", type=int, default=200)
+    parser.add_argument("--spatial_size", type=int, nargs=3, default=[128, 128, 128])
     parser.add_argument("--latent_channels", type=int, default=3)
     parser.add_argument("--num_channels", type=int, nargs="+", default=[64, 128, 128, 128])
     parser.add_argument("--num_res_blocks", type=int, default=2)
     parser.add_argument("--norm_num_groups", type=int, default=32)
     parser.add_argument("--norm_eps", type=float, default=1e-6)
-    parser.add_argument("--attention_levels", type=int, nargs="+", default=[0, 0, 0, 0])
+    parser.add_argument("--attention_levels", type=int, nargs="+", default=[0, 0, 0, 1])
     return parser.parse_args()
 
 
-def find_medical_mask_files(data_dir: Path):
-    files = []
-    for ext in ("*.nrrd", "*.nhdr", "*.nii", "*.nii.gz"):
-        files.extend(data_dir.rglob(ext))
-    files = sorted(set(files))
-    if not files:
-        raise ValueError(f"No supported files found in {data_dir}")
-    return files
-
-
-def split_data(paths, val_ratio, seed):
-    indices = list(range(len(paths)))
-    rng = random.Random(seed)
-    rng.shuffle(indices)
-    n_val = max(1, int(len(indices) * val_ratio))
-    val_indices = set(indices[:n_val])
-    train = [{"mask": str(paths[i])} for i in indices if i not in val_indices]
-    val = [{"mask": str(paths[i])} for i in indices if i in val_indices]
-    return train, val
-
-
-def build_transforms(spatial_size, spatial_mode, target_label, binarize_input, roi_mode):
-    ops = [
-        LoadMedicalMaskd(keys=["mask"]),
-        transforms.EnsureChannelFirstd(keys=["mask"], channel_dim="no_channel"),
-        transforms.EnsureTyped(keys=["mask"], dtype=torch.float32, track_meta=False),
-    ]
-    if target_label >= 0:
-        ops.append(transforms.Lambdad(keys=["mask"], func=lambda x: (x == float(target_label)).float()))
-    else:
-        ops.append(transforms.ScaleIntensityRanged(keys=["mask"], a_min=0.0, a_max=1.0, b_min=0.0, b_max=1.0, clip=True))
-    if binarize_input:
-        ops.append(transforms.Lambdad(keys=["mask"], func=lambda x: (x > 0.5).float()))
-
-    if spatial_mode == "resize":
-        ops.append(transforms.Resized(keys=["mask"], spatial_size=spatial_size, mode="nearest-exact"))
-    else:
-        if roi_mode == "foreground":
-            ops.append(
-                transforms.CropForegroundd(
-                    keys=["mask"],
-                    source_key="mask",
-                    select_fn=lambda x: x > 0,
-                    margin=8,
-                    allow_smaller=True,
-                )
-            )
-        ops.extend(
-            [
-                transforms.SpatialPadd(keys=["mask"], spatial_size=spatial_size),
-                transforms.CenterSpatialCropd(keys=["mask"], roi_size=spatial_size),
-            ]
-        )
-    return transforms.Compose(ops)
-
-
-def extract_state_dict(loaded_obj):
-    if isinstance(loaded_obj, dict):
-        if "model" in loaded_obj and isinstance(loaded_obj["model"], dict):
-            return loaded_obj["model"]
-        if "state_dict" in loaded_obj and isinstance(loaded_obj["state_dict"], dict):
-            return loaded_obj["state_dict"]
-    return loaded_obj
-
-
-def dice_score(pred_bin, gt_bin, eps=1e-8):
-    inter = torch.sum(pred_bin * gt_bin, dim=[1, 2, 3, 4])
-    denom = torch.sum(pred_bin, dim=[1, 2, 3, 4]) + torch.sum(gt_bin, dim=[1, 2, 3, 4])
-    return ((2.0 * inter + eps) / (denom + eps)).cpu().numpy()
-
-
-def iou_score(pred_bin, gt_bin, eps=1e-8):
-    inter = torch.sum(pred_bin * gt_bin, dim=[1, 2, 3, 4])
-    union = torch.sum((pred_bin + gt_bin) > 0, dim=[1, 2, 3, 4])
-    return ((inter + eps) / (union + eps)).cpu().numpy()
-
-
-def volume_relative_error(pred_bin, gt_bin, eps=1e-8):
-    vp = torch.sum(pred_bin, dim=[1, 2, 3, 4])
-    vg = torch.sum(gt_bin, dim=[1, 2, 3, 4])
-    return (torch.abs(vp - vg) / (vg + eps)).cpu().numpy()
-
-
-def save_orthogonal_comparison(gt, recon, out_path, threshold=0.5):
-    gt_np = gt[0, 0].cpu().numpy()
-    rc_np = recon[0, 0].cpu().numpy()
-    rb_np = (rc_np > float(threshold)).astype(np.float32)
-
-    # Pick slices with most foreground instead of fixed center slices.
-    z = int(np.argmax(np.sum(gt_np, axis=(0, 1))))
-    y = int(np.argmax(np.sum(gt_np, axis=(0, 2))))
-    x = int(np.argmax(np.sum(gt_np, axis=(1, 2))))
-    if np.sum(gt_np) == 0:
-        z = gt_np.shape[2] // 2
-        y = gt_np.shape[1] // 2
-        x = gt_np.shape[0] // 2
-
-    def norm01(a):
-        a = a.astype(np.float32)
-        mn, mx = float(np.min(a)), float(np.max(a))
-        if mx - mn < 1e-8:
-            return np.zeros_like(a, dtype=np.float32)
-        return (a - mn) / (mx - mn)
-
-    rc_vis = norm01(rc_np)
-    fig, axes = plt.subplots(4, 3, figsize=(12, 14))
-
-    # Row 1: GT slices
-    axes[0, 0].imshow(gt_np[:, :, z], cmap="gray", vmin=0, vmax=1)
-    axes[0, 1].imshow(gt_np[:, y, :], cmap="gray", vmin=0, vmax=1)
-    axes[0, 2].imshow(gt_np[x, :, :], cmap="gray", vmin=0, vmax=1)
-    axes[0, 0].set_title("GT Axial")
-    axes[0, 1].set_title("GT Coronal")
-    axes[0, 2].set_title("GT Sagittal")
-
-    # Row 2: Raw recon slices (normalized for visibility)
-    axes[1, 0].imshow(rc_vis[:, :, z], cmap="gray", vmin=0, vmax=1)
-    axes[1, 1].imshow(rc_vis[:, y, :], cmap="gray", vmin=0, vmax=1)
-    axes[1, 2].imshow(rc_vis[x, :, :], cmap="gray", vmin=0, vmax=1)
-    axes[1, 0].set_title("Recon(raw) Axial")
-    axes[1, 1].set_title("Recon(raw) Coronal")
-    axes[1, 2].set_title("Recon(raw) Sagittal")
-
-    # Row 3: Binary recon slices
-    axes[2, 0].imshow(rb_np[:, :, z], cmap="gray", vmin=0, vmax=1)
-    axes[2, 1].imshow(rb_np[:, y, :], cmap="gray", vmin=0, vmax=1)
-    axes[2, 2].imshow(rb_np[x, :, :], cmap="gray", vmin=0, vmax=1)
-    axes[2, 0].set_title("Recon(bin) Axial")
-    axes[2, 1].set_title("Recon(bin) Coronal")
-    axes[2, 2].set_title("Recon(bin) Sagittal")
-
-    # Row 4: MIP projections
-    axes[3, 0].imshow(np.max(gt_np, axis=2), cmap="gray", vmin=0, vmax=1)
-    axes[3, 1].imshow(np.max(rc_vis, axis=2), cmap="gray", vmin=0, vmax=1)
-    axes[3, 2].imshow(np.max(rb_np, axis=2), cmap="gray", vmin=0, vmax=1)
-    axes[3, 0].set_title("GT MIP(z)")
-    axes[3, 1].set_title("Recon(raw) MIP(z)")
-    axes[3, 2].set_title("Recon(bin) MIP(z)")
-
-    for ax in axes.flatten():
-        ax.axis("off")
-    plt.tight_layout()
-    plt.savefig(out_path, dpi=150)
-    plt.close(fig)
-
-
-def _case_base_name(case_path: str):
-    name = Path(case_path).name
-    if name.endswith(".nii.gz"):
-        return name[:-7]
-    if name.endswith(".nii") or name.endswith(".nrrd") or name.endswith(".nhdr"):
-        return Path(name).stem
-    return Path(name).stem
-
-
-def save_volume_triplet(case_path, gt, recon, out_dir: Path, threshold=0.5, prefix=""):
-    gt_np = gt[0, 0].cpu().numpy().astype(np.float32)
-    rc_np = recon[0, 0].cpu().numpy().astype(np.float32)
-    rb_np = (rc_np > float(threshold)).astype(np.float32)
-
-    affine = np.eye(4, dtype=np.float32)
-    low = case_path.lower()
-    if low.endswith(".nii") or low.endswith(".nii.gz"):
-        try:
-            src = nib.load(case_path)
-            affine = src.affine.astype(np.float32)
-        except Exception:
-            pass
-
-    base = _case_base_name(case_path)
-    if prefix:
-        base = f"{prefix}_{base}"
-    nib.save(nib.Nifti1Image(gt_np, affine), str(out_dir / f"{base}_gt.nii.gz"))
-    nib.save(nib.Nifti1Image(rc_np, affine), str(out_dir / f"{base}_recon_raw.nii.gz"))
-    nib.save(nib.Nifti1Image(rb_np, affine), str(out_dir / f"{base}_recon_bin.nii.gz"))
-
-
-def main():
-    args = parse_args()
-    out_dir = Path(args.output_dir)
-    vis_dir = out_dir / "visualizations"
-    vol_dir = out_dir / "volumes"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    vis_dir.mkdir(parents=True, exist_ok=True)
-    if args.save_volumes:
-        vol_dir.mkdir(parents=True, exist_ok=True)
-
-    files = find_medical_mask_files(Path(args.data_dir))
-    train_data, val_data = split_data(files, args.val_ratio, args.seed)
-    if args.split == "train":
-        eval_data = train_data
-    elif args.split == "val":
-        eval_data = val_data
-    else:
-        eval_data = [{"mask": str(p)} for p in files]
-    print(f"Total={len(files)} eval_split={args.split} eval_count={len(eval_data)}")
-
-    tf = build_transforms(
-        spatial_size=args.spatial_size,
-        spatial_mode=args.spatial_mode,
-        target_label=args.target_label,
-        binarize_input=args.binarize_input,
-        roi_mode=args.roi_mode,
-    )
-    if args.cache_rate > 0:
-        ds = CacheDataset(eval_data, transform=tf, cache_rate=args.cache_rate, num_workers=args.num_workers)
-    else:
-        ds = Dataset(eval_data, transform=tf)
-    dl = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, persistent_workers=args.num_workers > 0)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = AutoencoderKL(
+def build_autoencoder(args: argparse.Namespace) -> AutoencoderKL:
+    return AutoencoderKL(
         spatial_dims=3,
         in_channels=1,
         out_channels=1,
@@ -292,66 +72,117 @@ def main():
         attention_levels=tuple(bool(x) for x in args.attention_levels),
         with_encoder_nonlocal_attn=False,
         with_decoder_nonlocal_attn=False,
-    ).to(device)
+    )
+
+
+def get_eval_files(cache_dir: str, split: str, val_ratio: float, test_ratio: float, seed: int) -> list[Path]:
+    train_files, val_files, test_files = split_pt_files_train_val_test(
+        cache_dir,
+        val_ratio=val_ratio,
+        test_ratio=test_ratio,
+        seed=seed,
+    )
+    if split == "train":
+        return train_files
+    if split == "val":
+        return val_files
+    if split == "test":
+        return test_files
+    return train_files + val_files + test_files
+
+
+def main() -> None:
+    args = parse_args()
+    set_seed(args.seed)
+
+    output_dir = Path(args.output_dir)
+    vis_dir = output_dir / "visualizations"
+    raw_dir = output_dir / "generated_views"
+    vol_dir = output_dir / "volumes"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    vis_dir.mkdir(parents=True, exist_ok=True)
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    if args.save_volumes:
+        vol_dir.mkdir(parents=True, exist_ok=True)
+    save_json(vars(args), output_dir / "eval_config.json")
+
+    eval_files = get_eval_files(args.cache_dir, args.split, args.val_ratio, args.test_ratio, args.seed)
+    dataset = VesselMaskPtDataset(eval_files, augment=False, spatial_size=tuple(args.spatial_size))
+    loader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        persistent_workers=args.num_workers > 0,
+        pin_memory=torch.cuda.is_available(),
+    )
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = build_autoencoder(args).to(device)
     loaded = torch.load(args.model_path, map_location="cpu")
-    state_dict = extract_state_dict(loaded)
-    model.load_state_dict(state_dict, strict=True)
+    model.load_state_dict(extract_state_dict(loaded), strict=True)
     model.eval()
 
-    per_case = []
+    per_case: list[dict[str, float | str]] = []
     vis_count = 0
     vol_count = 0
-    with torch.no_grad():
-        for i, batch in enumerate(tqdm(dl, desc="Evaluating", ncols=100)):
-            gt = batch["mask"].to(device)
-            recon, _, _ = model(gt)
-            recon = recon.float()
-            gt = gt.float()
 
+    with torch.no_grad():
+        for batch in tqdm(loader, desc="Evaluating", ncols=120):
+            gt = batch["mask"].to(device).float()
+            recon_raw, _, _ = model(gt)
+            recon = torch.sigmoid(recon_raw).float()
             pred_bin = (recon > args.threshold).float()
             gt_bin = (gt > 0.5).float()
 
             l1 = F.l1_loss(recon, gt, reduction="none").mean(dim=[1, 2, 3, 4]).cpu().numpy()
             mae = torch.abs(recon - gt).mean(dim=[1, 2, 3, 4]).cpu().numpy()
-            dice = dice_score(pred_bin, gt_bin)
-            iou = iou_score(pred_bin, gt_bin)
-            vre = volume_relative_error(pred_bin, gt_bin)
+            dice = dice_score(pred_bin, gt_bin).cpu().numpy()
+            iou = iou_score(pred_bin, gt_bin).cpu().numpy()
+            vre = volume_relative_error(pred_bin, gt_bin).cpu().numpy()
+            vessel_pred = vessel_ratio(pred_bin).cpu().numpy()
+            vessel_gt = vessel_ratio(gt_bin).cpu().numpy()
+            paths = batch["path"]
 
-            bs = gt.shape[0]
-            for b in range(bs):
-                sample_idx = i * args.batch_size + b
-                case_path = eval_data[sample_idx]["mask"]
+            for idx, case_path in enumerate(paths):
+                case_name = infer_case_name(case_path)
                 per_case.append(
                     {
-                        "case": case_path,
-                        "dice": float(dice[b]),
-                        "iou": float(iou[b]),
-                        "l1": float(l1[b]),
-                        "mae": float(mae[b]),
-                        "volume_rel_error": float(vre[b]),
+                        "case": case_name,
+                        "path": case_path,
+                        "dice": float(dice[idx]),
+                        "iou": float(iou[idx]),
+                        "l1": float(l1[idx]),
+                        "mae": float(mae[idx]),
+                        "volume_rel_error": float(vre[idx]),
+                        "vessel_ratio_pred": float(vessel_pred[idx]),
+                        "vessel_ratio_gt": float(vessel_gt[idx]),
                     }
                 )
+
                 if vis_count < args.max_visualizations:
-                    save_orthogonal_comparison(
-                        gt[b : b + 1].cpu(),
-                        recon[b : b + 1].cpu(),
-                        vis_dir / f"case_{vis_count:04d}.png",
+                    save_recon_comparison(
+                        gt=gt[idx : idx + 1].cpu(),
+                        recon=recon[idx : idx + 1].cpu(),
+                        out_path=vis_dir / f"{case_name}.png",
                         threshold=args.threshold,
+                    )
+                    save_generated_overview(
+                        mask=recon[idx : idx + 1].cpu(),
+                        out_path=raw_dir / f"{case_name}.png",
+                        threshold=args.threshold,
+                        title="Recon",
                     )
                     vis_count += 1
+
                 if args.save_volumes and vol_count < args.max_saved_volumes:
-                    save_volume_triplet(
-                        case_path=case_path,
-                        gt=gt[b : b + 1].cpu(),
-                        recon=recon[b : b + 1].cpu(),
-                        out_dir=vol_dir,
-                        threshold=args.threshold,
-                        prefix=f"case_{vol_count:04d}",
-                    )
+                    save_nifti_volume(gt[idx : idx + 1].cpu(), vol_dir / f"{case_name}_gt.nii.gz")
+                    save_nifti_volume(recon[idx : idx + 1].cpu(), vol_dir / f"{case_name}_recon_raw.nii.gz")
+                    save_nifti_volume(pred_bin[idx : idx + 1].cpu(), vol_dir / f"{case_name}_recon_bin.nii.gz")
                     vol_count += 1
 
-    def mean_of(key):
-        return float(np.mean([x[key] for x in per_case])) if per_case else 0.0
+    def mean_of(key: str) -> float:
+        return float(np.mean([item[key] for item in per_case])) if per_case else 0.0
 
     summary = {
         "num_cases": len(per_case),
@@ -362,23 +193,32 @@ def main():
         "l1_mean": mean_of("l1"),
         "mae_mean": mean_of("mae"),
         "volume_rel_error_mean": mean_of("volume_rel_error"),
+        "vessel_ratio_pred_mean": mean_of("vessel_ratio_pred"),
+        "vessel_ratio_gt_mean": mean_of("vessel_ratio_gt"),
         "model_path": args.model_path,
     }
-
-    with open(out_dir / "metrics_summary.json", "w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2)
-    with open(out_dir / "per_case_metrics.csv", "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["case", "dice", "iou", "l1", "mae", "volume_rel_error"])
+    save_json(summary, output_dir / "metrics_summary.json")
+    with (output_dir / "per_case_metrics.csv").open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "case",
+                "path",
+                "dice",
+                "iou",
+                "l1",
+                "mae",
+                "volume_rel_error",
+                "vessel_ratio_pred",
+                "vessel_ratio_gt",
+            ],
+        )
         writer.writeheader()
         writer.writerows(per_case)
 
     print("Evaluation finished.")
     print(json.dumps(summary, indent=2))
-    print(f"Saved summary: {out_dir / 'metrics_summary.json'}")
-    print(f"Saved per-case: {out_dir / 'per_case_metrics.csv'}")
-    print(f"Saved visualizations: {vis_dir}")
-    if args.save_volumes:
-        print(f"Saved volumes: {vol_dir} (count={vol_count})")
+    print(f"Saved metrics to {output_dir}")
 
 
 if __name__ == "__main__":

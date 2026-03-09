@@ -3,7 +3,30 @@
     "allow": [
       "Bash(chmod +x:*)",
       "Bash(grep:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Read(//home/yinhaojie/CVI/logs/hepaticvessel_3d/cache/**)",
+      "Bash(ls *.pt)",
+      "Bash(python3:*)",
+      "Bash(source:*)",
+      "Bash(conda env list)",
+      "Read(//home/yinhaojie/miniconda3/envs/**)",
+      "Read(//home/yinhaojie/anaconda3/**)",
+      "Bash(conda run:*)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:arxiv.org)",
+      "Bash(bash:*)",
+      "Bash(conda info:*)",
+      "Bash(/home/yinhaojie/miniconda3/envs/gm/bin/python:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(nvidia-smi:*)",
+      "Bash(file:*)",
+      "Bash(ls:*)",
+      "WebFetch(domain:deepwiki.com)",
+      "Bash(gh api:*)",
+      "Bash(python:*)",
+      "Bash(kill:*)",
+      "Bash(ps:*)"
     ]
   }
 }

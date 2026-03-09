@@ -1,3 +1,12 @@
+"""Train 3D AutoencoderKL for CT image reconstruction.
+
+Unlike the mask VAE (BCE+Dice loss on binary data), this uses:
+  - L1 reconstruction loss (continuous CT values in [-1, 1])
+  - KL divergence regularization
+  - Optional PatchDiscriminator adversarial loss
+  - Optional perceptual loss
+  - No sigmoid on output (direct reconstruction)
+"""
 from __future__ import annotations
 
 import argparse
@@ -7,7 +16,6 @@ from pathlib import Path
 
 import torch
 import torch.nn.functional as F
-from torch.nn import BCEWithLogitsLoss
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -18,64 +26,69 @@ if str(ROOT) not in sys.path:
 from generative.losses import PatchAdversarialLoss, PerceptualLoss
 from generative.networks.nets import AutoencoderKL, PatchDiscriminator
 from vessel_ldm_utils import (
-    VesselMaskPtDataset,
-    dice_score,
+    VesselImagePtDataset,
     extract_state_dict,
     kl_loss,
     load_pretrained_with_shape_filter,
+    save_ct_recon_comparison,
     save_json,
-    save_recon_comparison,
     set_seed,
     split_pt_files_train_val_test,
-    vessel_ratio,
-    volume_relative_error,
 )
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser("Train 3D AutoencoderKL for hepatic vessel masks from cached .pt files")
-    parser.add_argument("--cache_dir", type=str, required=True, help="Directory containing preprocessed .pt cache files")
-    parser.add_argument("--output_dir", type=str, default="./phase1-codex/outputs_vae_vessel_128")
-    parser.add_argument("--spatial_size", type=int, nargs=3, default=[128, 128, 128])
-    parser.add_argument("--batch_size", type=int, default=1)
-    parser.add_argument("--num_epochs", type=int, default=200)
-    parser.add_argument("--val_interval", type=int, default=10)
-    parser.add_argument("--save_interval", type=int, default=20)
-    parser.add_argument("--lr", type=float, default=1e-4, help="Generator learning rate")
-    parser.add_argument("--lr_d", type=float, default=5e-4, help="Discriminator learning rate")
-    parser.add_argument("--kl_weight", type=float, default=1e-6)
-    parser.add_argument("--bce_weight", type=float, default=1.0)
-    parser.add_argument("--bce_pos_weight", type=float, default=50.0,
-                        help="Positive class weight for BCE loss (MedSegLatDiff uses 50 for sparse masks)")
-    parser.add_argument("--dice_weight", type=float, default=1.0)
-    parser.add_argument("--adv_weight", type=float, default=0.01)
-    parser.add_argument("--perceptual_weight", type=float, default=0.001)
-    parser.add_argument("--warmup_epochs", type=int, default=5)
-    parser.add_argument("--patience", type=int, default=5,
-                        help="Early stopping patience (number of val intervals without improvement). 0 to disable.")
-    parser.add_argument("--gradient_clip", type=float, default=1.0)
-    parser.add_argument("--num_workers", type=int, default=4)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--val_ratio", type=float, default=0.1)
-    parser.add_argument("--test_ratio", type=float, default=0.1)
-    parser.add_argument("--amp", action="store_true")
-    parser.add_argument("--resume_ckpt", type=str, default="")
-    parser.add_argument("--pretrained_model", type=str, default="")
-    parser.add_argument("--pretrained_strict", action="store_true")
-    parser.add_argument("--val_max_visualizations", type=int, default=8)
-    parser.add_argument("--perceptual_cache_dir", type=str, default="")
-    parser.add_argument("--disable_perceptual_fallback", action="store_true")
-    parser.add_argument("--latent_channels", type=int, default=3)
-    parser.add_argument("--num_channels", type=int, nargs="+", default=[64, 128, 128, 128])
-    parser.add_argument("--num_res_blocks", type=int, default=2)
-    parser.add_argument("--norm_num_groups", type=int, default=32)
-    parser.add_argument("--norm_eps", type=float, default=1e-6)
-    parser.add_argument("--attention_levels", type=int, nargs="+", default=[0, 0, 0, 1])
-    parser.add_argument("--use_checkpointing", action="store_true")
-    parser.add_argument("--augment", dest="augment", action="store_true")
-    parser.add_argument("--no_augment", dest="augment", action="store_false")
-    parser.set_defaults(augment=True)
-    return parser.parse_args()
+    p = argparse.ArgumentParser("Train 3D AutoencoderKL for CT image reconstruction")
+    # Data
+    p.add_argument("--cache_dir", type=str, required=True)
+    p.add_argument("--output_dir", type=str, default="./phase2-image-vae/outputs_vae_image_128")
+    p.add_argument("--spatial_size", type=int, nargs=3, default=[128, 128, 128])
+    # Training
+    p.add_argument("--batch_size", type=int, default=1)
+    p.add_argument("--num_epochs", type=int, default=200)
+    p.add_argument("--val_interval", type=int, default=10)
+    p.add_argument("--save_interval", type=int, default=20)
+    p.add_argument("--lr", type=float, default=1e-4)
+    p.add_argument("--lr_d", type=float, default=5e-4)
+    # Loss weights
+    p.add_argument("--l1_weight", type=float, default=1.0)
+    p.add_argument("--kl_weight", type=float, default=1e-6)
+    p.add_argument("--adv_weight", type=float, default=0.01)
+    p.add_argument("--perceptual_weight", type=float, default=0.001)
+    p.add_argument("--warmup_epochs", type=int, default=5,
+                    help="Epochs before enabling adversarial loss")
+    p.add_argument("--patience", type=int, default=5,
+                    help="Early stopping patience (0=disable)")
+    p.add_argument("--gradient_clip", type=float, default=1.0)
+    p.add_argument("--num_workers", type=int, default=4)
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--val_ratio", type=float, default=0.1)
+    p.add_argument("--test_ratio", type=float, default=0.1)
+    p.add_argument("--amp", action="store_true")
+    # Model
+    p.add_argument("--latent_channels", type=int, default=3)
+    p.add_argument("--num_channels", type=int, nargs="+", default=[64, 128, 128, 128])
+    p.add_argument("--num_res_blocks", type=int, default=2)
+    p.add_argument("--norm_num_groups", type=int, default=32)
+    p.add_argument("--norm_eps", type=float, default=1e-6)
+    p.add_argument("--attention_levels", type=int, nargs="+", default=[0, 0, 0, 0],
+                    help="No attention by default (matching pretrained brain VAE)")
+    p.add_argument("--use_checkpointing", action="store_true")
+    # Pretrained / resume
+    p.add_argument("--resume_ckpt", type=str, default="")
+    p.add_argument("--pretrained_model", type=str, default="",
+                    help="Path to pretrained VAE weights (e.g. pretrained_models/autoencoder.pth)")
+    p.add_argument("--pretrained_strict", action="store_true")
+    # Augmentation
+    p.add_argument("--augment", dest="augment", action="store_true")
+    p.add_argument("--no_augment", dest="augment", action="store_false")
+    p.set_defaults(augment=True)
+    # Visualization
+    p.add_argument("--val_max_visualizations", type=int, default=8)
+    # Perceptual loss
+    p.add_argument("--perceptual_cache_dir", type=str, default="")
+    p.add_argument("--disable_perceptual_fallback", action="store_true")
+    return p.parse_args()
 
 
 def build_autoencoder(args: argparse.Namespace) -> AutoencoderKL:
@@ -105,16 +118,6 @@ def build_discriminator() -> PatchDiscriminator:
     )
 
 
-def soft_dice_loss(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
-    pred = pred.float()
-    target = target.float()
-    dims = list(range(1, pred.ndim))
-    intersection = torch.sum(pred * target, dim=dims)
-    denominator = torch.sum(pred, dim=dims) + torch.sum(target, dim=dims)
-    dice = (2.0 * intersection + eps) / (denominator + eps)
-    return 1.0 - torch.mean(dice)
-
-
 def load_model_weights(model: AutoencoderKL, pretrained_model: str, strict: bool) -> None:
     loaded = torch.load(pretrained_model, map_location="cpu")
     state_dict = extract_state_dict(loaded)
@@ -122,18 +125,17 @@ def load_model_weights(model: AutoencoderKL, pretrained_model: str, strict: bool
         model.load_state_dict(state_dict, strict=True)
         print(f"Loaded pretrained VAE with strict=True from {pretrained_model}")
         return
-
     filtered, skipped, missing_keys, unexpected_keys = load_pretrained_with_shape_filter(model, state_dict)
     print(f"Loaded pretrained VAE from {pretrained_model}")
-    print(f"Loaded keys: {len(filtered)} / {len(state_dict)}")
+    print(f"  Loaded keys: {len(filtered)} / {len(state_dict)}")
     if skipped:
-        print("Example skipped keys:")
+        print("  Skipped keys (first 10):")
         for key, reason in skipped[:10]:
-            print(f"  - {key}: {reason}")
+            print(f"    - {key}: {reason}")
     if missing_keys:
-        print(f"Missing keys after load: {len(missing_keys)}")
+        print(f"  Missing keys after load: {len(missing_keys)}")
     if unexpected_keys:
-        print(f"Unexpected keys after load: {len(unexpected_keys)}")
+        print(f"  Unexpected keys after load: {len(unexpected_keys)}")
 
 
 def evaluate(
@@ -142,51 +144,34 @@ def evaluate(
     device: torch.device,
     use_amp: bool,
     amp_device: str,
-    threshold: float,
     vis_dir: Path,
     epoch: int,
     max_visualizations: int,
 ) -> dict[str, float]:
     model.eval()
-    metrics = {
-        "val_l1": 0.0,
-        "val_kl": 0.0,
-        "val_dice": 0.0,
-        "val_vre": 0.0,
-        "val_vessel_ratio_recon": 0.0,
-        "val_vessel_ratio_gt": 0.0,
-    }
+    metrics = {"val_l1": 0.0, "val_kl": 0.0, "val_mse": 0.0}
     vis_count = 0
 
     with torch.no_grad():
         for batch_idx, batch in enumerate(loader):
-            masks = batch["mask"].to(device)
+            images = batch["image"].to(device)
             with torch.amp.autocast(device_type=amp_device, enabled=use_amp):
-                recon_raw, z_mu, z_sigma = model(masks)
-                recon = torch.sigmoid(recon_raw)
-                recon_loss = F.l1_loss(recon.float(), masks.float())
-                current_kl = kl_loss(z_mu, z_sigma)
+                recon, z_mu, z_sigma = model(images)
+                l1_val = F.l1_loss(recon.float(), images.float())
+                mse_val = F.mse_loss(recon.float(), images.float())
+                kl_val = kl_loss(z_mu, z_sigma)
 
-            recon = recon.float()
-            masks = masks.float()
-            recon_bin = (recon > threshold).float()
-            mask_bin = (masks > 0.5).float()
-
-            metrics["val_l1"] += float(recon_loss.item())
-            metrics["val_kl"] += float(current_kl.item())
-            metrics["val_dice"] += float(dice_score(recon_bin, mask_bin).mean().item())
-            metrics["val_vre"] += float(volume_relative_error(recon_bin, mask_bin).mean().item())
-            metrics["val_vessel_ratio_recon"] += float(vessel_ratio(recon_bin).mean().item())
-            metrics["val_vessel_ratio_gt"] += float(vessel_ratio(mask_bin).mean().item())
+            metrics["val_l1"] += float(l1_val.item())
+            metrics["val_mse"] += float(mse_val.item())
+            metrics["val_kl"] += float(kl_val.item())
 
             if vis_count < max_visualizations:
-                count = min(max_visualizations - vis_count, masks.shape[0])
-                for sample_idx in range(count):
-                    save_recon_comparison(
-                        gt=masks[sample_idx : sample_idx + 1].cpu(),
-                        recon=recon[sample_idx : sample_idx + 1].cpu(),
-                        out_path=vis_dir / f"epoch_{epoch + 1:04d}_case_{batch_idx:04d}_{sample_idx:02d}.png",
-                        threshold=threshold,
+                count = min(max_visualizations - vis_count, images.shape[0])
+                for s in range(count):
+                    save_ct_recon_comparison(
+                        gt=images[s:s+1].cpu(),
+                        recon=recon[s:s+1].float().cpu(),
+                        out_path=vis_dir / f"epoch_{epoch+1:04d}_case_{batch_idx:04d}_{s:02d}.png",
                     )
                     vis_count += 1
 
@@ -208,17 +193,13 @@ def main() -> None:
     vis_dir.mkdir(parents=True, exist_ok=True)
     save_json(vars(args), output_dir / "train_config.json")
 
+    # Data split
     train_files, val_files, test_files = split_pt_files_train_val_test(
-        args.cache_dir,
-        val_ratio=args.val_ratio,
-        test_ratio=args.test_ratio,
-        seed=args.seed,
+        args.cache_dir, val_ratio=args.val_ratio, test_ratio=args.test_ratio, seed=args.seed,
     )
     save_json(
         {
             "seed": args.seed,
-            "val_ratio": args.val_ratio,
-            "test_ratio": args.test_ratio,
             "num_train": len(train_files),
             "num_val": len(val_files),
             "num_test": len(test_files),
@@ -228,42 +209,35 @@ def main() -> None:
         },
         output_dir / "data_split.json",
     )
-    train_ds = VesselMaskPtDataset(train_files, augment=args.augment, spatial_size=tuple(args.spatial_size))
-    val_ds = VesselMaskPtDataset(val_files, augment=False, spatial_size=tuple(args.spatial_size))
+
+    train_ds = VesselImagePtDataset(train_files, augment=args.augment, spatial_size=tuple(args.spatial_size))
+    val_ds = VesselImagePtDataset(val_files, augment=False, spatial_size=tuple(args.spatial_size))
     train_loader = DataLoader(
-        train_ds,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-        persistent_workers=args.num_workers > 0,
+        train_ds, batch_size=args.batch_size, shuffle=True,
+        num_workers=args.num_workers, persistent_workers=args.num_workers > 0,
         pin_memory=torch.cuda.is_available(),
     )
     val_loader = DataLoader(
-        val_ds,
-        batch_size=1,
-        shuffle=False,
-        num_workers=args.num_workers,
-        persistent_workers=args.num_workers > 0,
+        val_ds, batch_size=1, shuffle=False,
+        num_workers=args.num_workers, persistent_workers=args.num_workers > 0,
         pin_memory=torch.cuda.is_available(),
     )
 
+    # Model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     use_amp = bool(args.amp and device.type == "cuda")
     amp_device = "cuda" if device.type == "cuda" else "cpu"
     model = build_autoencoder(args).to(device)
     discriminator = build_discriminator().to(device) if args.adv_weight > 0 else None
-    bce_pos_weight = torch.tensor([args.bce_pos_weight], device=device)
-    bce_loss = BCEWithLogitsLoss(pos_weight=bce_pos_weight)
     adv_loss = PatchAdversarialLoss(criterion="least_squares") if discriminator is not None else None
+
+    # Perceptual loss
     perceptual_loss = None
     effective_perceptual_weight = float(args.perceptual_weight)
     if effective_perceptual_weight > 0:
         try:
             perceptual_loss = PerceptualLoss(
-                spatial_dims=3,
-                network_type="squeeze",
-                is_fake_3d=True,
-                fake_3d_ratio=0.2,
+                spatial_dims=3, network_type="squeeze", is_fake_3d=True, fake_3d_ratio=0.2,
                 cache_dir=args.perceptual_cache_dir or None,
             ).to(device)
         except Exception as error:
@@ -271,21 +245,20 @@ def main() -> None:
                 raise
             perceptual_loss = None
             effective_perceptual_weight = 0.0
-            print(
-                "Warning: failed to initialize perceptual loss, falling back to reconstruction+KL+GAN only. "
-                f"Reason: {error}"
-            )
+            print(f"Warning: perceptual loss init failed ({error}), continuing without it.")
 
+    # Optimizers
     optimizer_g = torch.optim.Adam(model.parameters(), lr=args.lr)
     optimizer_d = torch.optim.Adam(discriminator.parameters(), lr=args.lr_d) if discriminator is not None else None
     scaler_g = torch.amp.GradScaler(amp_device, enabled=use_amp)
     scaler_d = torch.amp.GradScaler(amp_device, enabled=use_amp) if discriminator is not None else None
 
     start_epoch = 0
-    best_dice = float("-inf")
+    best_l1 = float("inf")
     no_improve_count = 0
     history: list[dict[str, float | int]] = []
 
+    # Resume or pretrained
     if args.resume_ckpt:
         ckpt = torch.load(args.resume_ckpt, map_location="cpu")
         model.load_state_dict(ckpt["model"], strict=True)
@@ -299,54 +272,46 @@ def main() -> None:
         if scaler_d is not None and "scaler_d" in ckpt and ckpt["scaler_d"] is not None:
             scaler_d.load_state_dict(ckpt["scaler_d"])
         start_epoch = int(ckpt.get("epoch", 0)) + 1
-        best_dice = float(ckpt.get("best_dice", best_dice))
+        best_l1 = float(ckpt.get("best_l1", best_l1))
         history = list(ckpt.get("history", []))
-        print(f"Resumed VAE training from {args.resume_ckpt} at epoch {start_epoch}")
+        print(f"Resumed from {args.resume_ckpt} at epoch {start_epoch}")
     elif args.pretrained_model:
         load_model_weights(model, args.pretrained_model, strict=args.pretrained_strict)
 
     print(
-        f"Training VAE on {len(train_ds)} samples, validation on {len(val_ds)} samples, test_holdout={len(test_files)}, "
-        f"device={device}, amp={use_amp}, dice_weight={args.dice_weight}, "
-        f"adv_weight={args.adv_weight}, perceptual_weight={effective_perceptual_weight}, "
-        f"use_checkpointing={args.use_checkpointing}"
+        f"Training Image VAE: {len(train_ds)} train, {len(val_ds)} val, {len(test_files)} test\n"
+        f"  device={device}, amp={use_amp}, arch={list(args.num_channels)}, latent={args.latent_channels}\n"
+        f"  l1_weight={args.l1_weight}, kl_weight={args.kl_weight}, "
+        f"adv_weight={args.adv_weight}, perceptual_weight={effective_perceptual_weight}"
     )
 
     for epoch in range(start_epoch, args.num_epochs):
         model.train()
         if discriminator is not None:
             discriminator.train()
-        running = {
-            "train_l1": 0.0,
-            "train_bce": 0.0,
-            "train_dice": 0.0,
-            "train_kl": 0.0,
-            "train_p": 0.0,
-            "train_g_adv": 0.0,
-            "train_d": 0.0,
-        }
+
+        running = {"train_l1": 0.0, "train_kl": 0.0, "train_p": 0.0, "train_g_adv": 0.0, "train_d": 0.0}
         use_adversarial = discriminator is not None and epoch >= args.warmup_epochs
-        progress = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{args.num_epochs}", ncols=120)
+        progress = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.num_epochs}", ncols=120)
 
         for step, batch in enumerate(progress, start=1):
-            masks = batch["mask"].to(device)
+            images = batch["image"].to(device)
 
+            # ---- Generator step ----
             optimizer_g.zero_grad(set_to_none=True)
             with torch.amp.autocast(device_type=amp_device, enabled=use_amp):
-                recon_raw, z_mu, z_sigma = model(masks)
-                recon = torch.sigmoid(recon_raw)
-                l1_value = F.l1_loss(recon.float(), masks.float())
-                bce_value = bce_loss(recon_raw.float(), masks.float()) if args.bce_weight > 0 else torch.tensor(0.0, device=device)
-                dice_value = soft_dice_loss(recon.float(), masks.float()) if args.dice_weight > 0 else torch.tensor(0.0, device=device)
+                recon, z_mu, z_sigma = model(images)
+                l1_value = F.l1_loss(recon.float(), images.float())
                 current_kl = kl_loss(z_mu, z_sigma)
-                recon_loss = args.bce_weight * bce_value + args.dice_weight * dice_value
-                loss_g = recon_loss + args.kl_weight * current_kl
+                loss_g = args.l1_weight * l1_value + args.kl_weight * current_kl
+
                 perceptual_value = torch.tensor(0.0, device=device)
                 generator_adv = torch.tensor(0.0, device=device)
 
                 if perceptual_loss is not None and effective_perceptual_weight > 0:
-                    perceptual_value = perceptual_loss(recon.float(), masks.float())
+                    perceptual_value = perceptual_loss(recon.float(), images.float())
                     loss_g = loss_g + effective_perceptual_weight * perceptual_value
+
                 if use_adversarial:
                     logits_fake = discriminator(recon.contiguous().float())[-1]
                     generator_adv = adv_loss(logits_fake, target_is_real=True, for_discriminator=False)
@@ -359,13 +324,14 @@ def main() -> None:
             scaler_g.step(optimizer_g)
             scaler_g.update()
 
+            # ---- Discriminator step ----
             discriminator_value = torch.tensor(0.0, device=device)
             if use_adversarial:
                 optimizer_d.zero_grad(set_to_none=True)
                 with torch.amp.autocast(device_type=amp_device, enabled=use_amp):
                     logits_fake = discriminator(recon.detach().contiguous().float())[-1]
                     loss_d_fake = adv_loss(logits_fake, target_is_real=False, for_discriminator=True)
-                    logits_real = discriminator(masks.contiguous().float())[-1]
+                    logits_real = discriminator(images.contiguous().float())[-1]
                     loss_d_real = adv_loss(logits_real, target_is_real=True, for_discriminator=True)
                     discriminator_value = args.adv_weight * 0.5 * (loss_d_fake + loss_d_real)
 
@@ -377,35 +343,25 @@ def main() -> None:
                 scaler_d.update()
 
             running["train_l1"] += float(l1_value.item())
-            running["train_bce"] += float(bce_value.item())
-            running["train_dice"] += float(dice_value.item())
             running["train_kl"] += float(current_kl.item())
             running["train_p"] += float(perceptual_value.item())
             running["train_g_adv"] += float(generator_adv.item())
             running["train_d"] += float(discriminator_value.item())
             progress.set_postfix(
-                bce=f"{running['train_bce'] / step:.5f}",
-                dice_loss=f"{running['train_dice'] / step:.5f}",
-                dice_score=f"{1.0 - running['train_dice'] / step:.5f}",
-                kl=f"{running['train_kl'] / step:.2f}",
-                l1=f"{running['train_l1'] / step:.5f}",
+                l1=f"{running['train_l1']/step:.5f}",
+                kl=f"{running['train_kl']/step:.2f}",
             )
 
         epoch_summary: dict[str, float | int] = {"epoch": epoch + 1}
         for key, value in running.items():
             epoch_summary[key] = value / max(1, len(train_loader))
 
+        # ---- Validation ----
         if (epoch + 1) % args.val_interval == 0 or epoch == 0 or (epoch + 1) == args.num_epochs:
             val_metrics = evaluate(
-                model=model,
-                loader=val_loader,
-                device=device,
-                use_amp=use_amp,
-                amp_device=amp_device,
-                threshold=0.5,
-                vis_dir=vis_dir,
-                epoch=epoch,
-                max_visualizations=args.val_max_visualizations,
+                model=model, loader=val_loader, device=device,
+                use_amp=use_amp, amp_device=amp_device,
+                vis_dir=vis_dir, epoch=epoch, max_visualizations=args.val_max_visualizations,
             )
             epoch_summary.update(val_metrics)
             print(json.dumps(epoch_summary, indent=2))
@@ -418,29 +374,29 @@ def main() -> None:
                 "optimizer_d": optimizer_d.state_dict() if optimizer_d is not None else None,
                 "scaler_g": scaler_g.state_dict(),
                 "scaler_d": scaler_d.state_dict() if scaler_d is not None else None,
-                "best_dice": best_dice,
+                "best_l1": best_l1,
                 "history": history + [epoch_summary],
                 "args": vars(args),
             }
             torch.save(ckpt, ckpt_dir / "last.pt")
 
-            current_dice = float(val_metrics["val_dice"])
-            if current_dice > best_dice:
-                best_dice = current_dice
+            current_l1 = float(val_metrics["val_l1"])
+            if current_l1 < best_l1:
+                best_l1 = current_l1
                 no_improve_count = 0
-                ckpt["best_dice"] = best_dice
+                ckpt["best_l1"] = best_l1
                 torch.save(ckpt, ckpt_dir / "best.pt")
                 torch.save(model.state_dict(), ckpt_dir / "autoencoderkl_best_weights.pt")
-                print(f"Saved new best VAE checkpoint with val_dice={best_dice:.6f}")
+                print(f"  New best: val_l1={best_l1:.6f}")
             else:
                 no_improve_count += 1
-                print(f"No improvement for {no_improve_count} val interval(s) (patience={args.patience})")
+                print(f"  No improvement for {no_improve_count} val interval(s) (patience={args.patience})")
 
         history.append(epoch_summary)
         save_json(history, output_dir / "metrics_history.json")
 
         if args.patience > 0 and no_improve_count >= args.patience:
-            print(f"Early stopping at epoch {epoch + 1}: no val_dice improvement for {args.patience} val intervals.")
+            print(f"Early stopping at epoch {epoch+1}")
             break
 
         if (epoch + 1) % args.save_interval == 0:
@@ -453,16 +409,16 @@ def main() -> None:
                     "optimizer_d": optimizer_d.state_dict() if optimizer_d is not None else None,
                     "scaler_g": scaler_g.state_dict(),
                     "scaler_d": scaler_d.state_dict() if scaler_d is not None else None,
-                    "best_dice": best_dice,
+                    "best_l1": best_l1,
                     "history": history,
                     "args": vars(args),
                 },
-                ckpt_dir / f"epoch_{epoch + 1}.pt",
+                ckpt_dir / f"epoch_{epoch+1}.pt",
             )
 
     torch.save(model.state_dict(), ckpt_dir / "autoencoderkl_final_weights.pt")
-    print(f"Training completed. Final weights: {ckpt_dir / 'autoencoderkl_final_weights.pt'}")
-    print(f"Best validation Dice: {best_dice:.6f}")
+    print(f"Training completed. Best val_l1: {best_l1:.6f}")
+    print(f"Final weights: {ckpt_dir / 'autoencoderkl_final_weights.pt'}")
 
 
 if __name__ == "__main__":
