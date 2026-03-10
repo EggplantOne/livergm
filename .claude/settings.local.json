@@ -26,7 +26,22 @@
       "Bash(gh api:*)",
       "Bash(python:*)",
       "Bash(kill:*)",
-      "Bash(ps:*)"
+      "Bash(ps:*)",
+      "Bash(curl:*)",
+      "WebFetch(domain:papers.miccai.org)",
+      "WebFetch(domain:ivg.au.tsinghua.edu.cn)",
+      "WebFetch(domain:pmc.ncbi.nlm.nih.gov)",
+      "WebFetch(domain:ar5iv.labs.arxiv.org)",
+      "Bash(pkill:*)",
+      "Bash(git add:*)",
+      "WebFetch(domain:www.mdpi.com)",
+      "WebFetch(domain:pdfs.semanticscholar.org)",
+      "Bash(tar:*)",
+      "Bash(find:*)",
+      "Bash(mkdir -p /home/yinhaojie/GenerativeModels/visualizations && cp /tmp/ct_slices.png /home/yinhaojie/GenerativeModels/visualizations/ct_slices.png)",
+      "WebFetch(domain:openaccess.thecvf.com)",
+      "WebFetch(domain:www.nature.com)",
+      "WebFetch(domain:api.github.com)"
     ]
   }
 }

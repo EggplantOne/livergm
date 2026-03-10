@@ -5,7 +5,7 @@
 
 python phase2-image-vae/train_vae_3d_image.py \
     --cache_dir /mnt/no1/yinhaojie/Task08_HepaticVessel/cache_1mm \
-    --output_dir ./phase2-image-vae/outputs_vae_image_128_v2 \
+    --output_dir ./phase2-image-vae/outputs_vae_image_128_v2_scratch \
     --spatial_size 128 128 128 \
     --batch_size 1 \
     --num_epochs 200 \
@@ -28,5 +28,4 @@ python phase2-image-vae/train_vae_3d_image.py \
     --attention_levels 0 0 0 0 \
     --latent_channels 3 \
     --num_res_blocks 2 \
-    --pretrained_model ./pretrained_models/autoencoder.pth \
     --use_checkpointing
