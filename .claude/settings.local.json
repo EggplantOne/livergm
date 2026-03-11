@@ -45,7 +45,11 @@
       "Bash(git remote:*)",
       "Bash(git push:*)",
       "WebFetch(domain:creatis-myriad.github.io)",
-      "WebFetch(domain:medium.com)"
+      "WebFetch(domain:medium.com)",
+      "Bash(git -C /home/yinhaojie/GenerativeModels log --oneline -20)",
+      "WebFetch(domain:developer.nvidia.com)",
+      "Bash(source ~/miniconda3/etc/profile.d/conda.sh && conda activate gm && python3 -c \"\nimport nibabel as nib\nimport numpy as np\nfrom pathlib import Path\nimport glob\n\ndata_root = Path\\('/mnt/no1/yinhaojie/Task08_HepaticVessel'\\)\nimgs = sorted\\(glob.glob\\(str\\(data_root / 'imagesTr/*.nii.gz'\\)\\)\\)[:10]\n\nfor p in imgs:\n    img = nib.load\\(p\\)\n    axcodes = nib.aff2axcodes\\(img.affine\\)\n    name = Path\\(p\\).name\n    spacing = np.array\\(img.header.get_zooms\\(\\)[:3]\\).round\\(2\\)\n    print\\(f'{name}: orientation={axcodes}, shape={img.shape}, spacing={spacing}'\\)\n\")",
+      "Bash(source ~/miniconda3/etc/profile.d/conda.sh && conda activate gm && python3 -c \"\nimport nibabel as nib\nimport numpy as np\nfrom pathlib import Path\nimport glob\nfrom collections import Counter\n\ndata_root = Path\\('/mnt/no1/yinhaojie/Task08_HepaticVessel'\\)\nimgs = sorted\\(glob.glob\\(str\\(data_root / 'imagesTr/*.nii.gz'\\)\\)\\)\n\norientations = Counter\\(\\)\nnon_ras = []\nfor p in imgs:\n    img = nib.load\\(p\\)\n    axcodes = nib.aff2axcodes\\(img.affine\\)\n    orientations[axcodes] += 1\n    if axcodes != \\('R', 'A', 'S'\\):\n        non_ras.append\\(\\(Path\\(p\\).name, axcodes\\)\\)\n\nprint\\(f'Total: {len\\(imgs\\)} images'\\)\nprint\\(f'Orientation distribution: {dict\\(orientations\\)}'\\)\nif non_ras:\n    print\\(f'Non-RAS files:'\\)\n    for name, ori in non_ras:\n        print\\(f'  {name}: {ori}'\\)\nelse:\n    print\\('All images are already RAS!'\\)\n\")"
     ]
   }
 }

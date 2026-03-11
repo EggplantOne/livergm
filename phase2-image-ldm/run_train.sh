@@ -8,11 +8,11 @@ VAE_CKPT="./phase2-image-vae/outputs_vae_image_128_v2/checkpoints/autoencoderkl_
 python phase2-image-ldm/train_ldm_3d_image.py \
     --cache_dir "$CACHE_DIR" \
     --vae_checkpoint "$VAE_CKPT" \
-    --output_dir ./phase2-image-ldm/outputs_ldm_image_v3 \
-    --batch_size 1 \
-    --num_epochs 300 \
+    --output_dir ./phase2-image-ldm/outputs_ldm_image_v4 \
+    --batch_size 4 \
+    --num_epochs 2000 \
     --val_interval 20 \
-    --save_interval 50 \
+    --save_interval 100 \
     --lr 1e-4 \
     --patience 0 \
     --amp \
