@@ -14,7 +14,7 @@ python phase2-image-ldm/train_ldm_3d_image.py \
     --val_interval 20 \
     --save_interval 50 \
     --lr 1e-4 \
-    --patience 5 \
+    --patience 0 \
     --amp \
     --vae_num_channels 64 128 128 128 \
     --vae_num_res_blocks 2 \

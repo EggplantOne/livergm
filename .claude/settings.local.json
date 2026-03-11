@@ -41,7 +41,11 @@
       "Bash(mkdir -p /home/yinhaojie/GenerativeModels/visualizations && cp /tmp/ct_slices.png /home/yinhaojie/GenerativeModels/visualizations/ct_slices.png)",
       "WebFetch(domain:openaccess.thecvf.com)",
       "WebFetch(domain:www.nature.com)",
-      "WebFetch(domain:api.github.com)"
+      "WebFetch(domain:api.github.com)",
+      "Bash(git remote:*)",
+      "Bash(git push:*)",
+      "WebFetch(domain:creatis-myriad.github.io)",
+      "WebFetch(domain:medium.com)"
     ]
   }
 }
